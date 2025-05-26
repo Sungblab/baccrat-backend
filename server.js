@@ -624,6 +624,9 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
       stats: currentBettingStats,
     });
 
+    // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
+    io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} });
+
     console.log("게임 결과 승인 완료");
 
     res.json({
@@ -645,8 +648,18 @@ let currentBettingStats = {
   player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
   banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
   tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-  player_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-  banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+  player_pair: {
+    count: 0,
+    total: 0,
+    bettor_count: 0,
+    total_bet_amount: 0,
+  },
+  banker_pair: {
+    count: 0,
+    total: 0,
+    bettor_count: 0,
+    total_bet_amount: 0,
+  },
 }; // 실시간 베팅 통계
 
 // 현재 게임 결과를 저장할 변수 추가
@@ -772,6 +785,16 @@ io.on("connection", (socket) => {
       });
 
       socket.emit("bet_success", "베팅이 완료되었습니다.");
+
+      // 해당 유저의 선택지별 총 베팅액 계산
+      const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
+        if (curBet.userId === userId) {
+          acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
+        }
+        return acc;
+      }, {});
+      socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
+
       console.log(
         `사용자 ${user.username}이(가) 베팅: ${choice}, 금액: ${amount}원`
       );
@@ -867,6 +890,20 @@ io.on("connection", (socket) => {
         cancelledBet: betToCancel,
       });
       io.emit("update_coins"); // 다른 유저에게도 (필요하다면) 코인 업데이트 (여기서는 잔액 변화가 특정 유저에게만 해당)
+
+      // 해당 유저의 선택지별 총 베팅액 다시 계산하여 전송
+      const myCurrentBetsOnChoicesAfterCancel = currentBets.reduce(
+        (acc, curBet) => {
+          if (curBet.userId === userId) {
+            acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
+          }
+          return acc;
+        },
+        {}
+      );
+      socket.emit("my_bets_updated", {
+        myCurrentBetsOnChoices: myCurrentBetsOnChoicesAfterCancel,
+      });
 
       console.log(
         `사용자 ${user.username}의 베팅 취소: ${betToCancel.choice}, 금액: ${betToCancel.amount}원`
@@ -1086,6 +1123,9 @@ io.on("connection", (socket) => {
         stats: currentBettingStats,
       });
 
+      // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
+      io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} });
+
       console.log("게임 결과 승인 완료");
     } catch (err) {
       console.error("게임 결과 승인 처리 에러:", err);
@@ -1133,6 +1173,11 @@ io.on("connection", (socket) => {
   socket.on("clear_cards_on_user_ui", () => {
     // console.log("[server.js] Received clear_cards_on_user_ui from game.html, emitting to user.html");
     io.emit("clear_cards_display_on_user_html"); // user.html의 카드 표시 클리어 이벤트
+  });
+
+  // 개인 베팅 금액 표시 초기화를 위한 my_bets_updated 이벤트 수신
+  socket.on("my_bets_updated", (data) => {
+    updateMyBetAmounts(data.myCurrentBetsOnChoices);
   });
 });
 
