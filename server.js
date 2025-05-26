@@ -625,7 +625,7 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
     });
 
     // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
-    io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} });
+    // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
     console.log("게임 결과 승인 완료");
 
@@ -1124,7 +1124,7 @@ io.on("connection", (socket) => {
       });
 
       // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
-      io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} });
+      // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
       console.log("게임 결과 승인 완료");
     } catch (err) {
