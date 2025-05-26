@@ -229,6 +229,31 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
       const winRate =
         totalBets === 0 ? 0 : ((wins / totalBets) * 100).toFixed(2);
 
+      // 사용자 순손익 계산
+      let netProfit = 0;
+      if (user.bettingHistory && user.bettingHistory.length > 0) {
+        user.bettingHistory.forEach((bet) => {
+          const betAmount = bet.amount;
+          if (bet.result === "win") {
+            if (bet.choice === "player") {
+              netProfit += betAmount; // 플레이어 승리: 베팅액 1배 수익 (총 2배 지급)
+            } else if (bet.choice === "banker") {
+              netProfit += betAmount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
+            } else if (bet.choice === "tie") {
+              netProfit += betAmount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
+            } else if (
+              bet.choice === "player_pair" ||
+              bet.choice === "banker_pair"
+            ) {
+              netProfit += betAmount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
+            }
+          } else if (bet.result === "lose") {
+            netProfit -= betAmount; // 패배: 베팅액만큼 손실
+          }
+          // 무승부 (P/B 베팅 후 타이 결과): 순손익 0 (원금 반환)이므로 별도 처리 안함
+        });
+      }
+
       return {
         _id: user._id,
         username: user.username,
@@ -239,6 +264,7 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
         losses,
         totalBets,
         winRate,
+        netProfit: netProfit, // 순손익 추가
       };
     });
 
