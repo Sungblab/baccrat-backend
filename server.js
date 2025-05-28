@@ -214,8 +214,7 @@ app.get("/api/admin/users", auth("admin"), async (req, res) => {
 app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
   try {
     const users = await User.find().select("-password");
-
-    const statsPromises = users.map(async (user) => {
+    const stats = users.map((user) => {
       const wins = user.bettingHistory.filter(
         (bet) => bet.result === "win"
       ).length;
@@ -226,46 +225,30 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
       const winRate =
         totalBets === 0 ? 0 : ((wins / totalBets) * 100).toFixed(2);
 
-      // 사용자 베팅 순손익 계산
-      let bettingNetProfit = 0;
+      // 사용자 순손익 계산
+      let netProfit = 0;
       if (user.bettingHistory && user.bettingHistory.length > 0) {
         user.bettingHistory.forEach((bet) => {
           const betAmount = bet.amount;
           if (bet.result === "win") {
             if (bet.choice === "player") {
-              bettingNetProfit += betAmount;
+              netProfit += betAmount; // 플레이어 승리: 베팅액 1배 수익 (총 2배 지급)
             } else if (bet.choice === "banker") {
-              bettingNetProfit += betAmount * 0.95;
+              netProfit += betAmount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
             } else if (bet.choice === "tie") {
-              bettingNetProfit += betAmount * 4;
+              netProfit += betAmount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
             } else if (
               bet.choice === "player_pair" ||
               bet.choice === "banker_pair"
             ) {
-              bettingNetProfit += betAmount * 10;
+              netProfit += betAmount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
             }
           } else if (bet.result === "lose") {
-            bettingNetProfit -= betAmount;
+            netProfit -= betAmount; // 패배: 베팅액만큼 손실
           }
+          // 무승부 (P/B 베팅 후 타이 결과): 순손익 0 (원금 반환)이므로 별도 처리 안함
         });
       }
-
-      // 사용자 총 충전액 계산
-      const userDeposits = await mongoose.connection.db
-        .collection("deposits")
-        .find({
-          userId: user._id, // user._id는 ObjectId입니다.
-          status: "approved",
-        })
-        .toArray();
-
-      const totalChargedAmount = userDeposits.reduce(
-        (sum, dep) => sum + (dep.amount || 0),
-        0
-      );
-
-      // 최종 순손익 계산
-      const overallNetProfit = bettingNetProfit - totalChargedAmount;
 
       return {
         _id: user._id,
@@ -277,16 +260,12 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
         losses,
         totalBets,
         winRate,
-        bettingNetProfit: bettingNetProfit,
-        totalChargedAmount: totalChargedAmount,
-        overallNetProfit: overallNetProfit,
+        netProfit: netProfit, // 순손익 추가
       };
     });
 
-    const stats = await Promise.all(statsPromises);
     res.json(stats);
   } catch (err) {
-    // console.error("Error in /api/admin/users-stats:", err); // 디버깅용
     res.status(500).json({ message: "서버 에러" });
   }
 });
