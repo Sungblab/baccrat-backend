@@ -1543,12 +1543,80 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
     }
 
     res.json({
-      message: `환 요청이 ${status === "approved" ? "인" : "거"}었습니다.`,
+      message: `환전 요청이 ${
+        status === "approved" ? "승인" : "거절"
+      }되었습니다.`,
     });
   } catch (err) {
+    console.error("Error processing exchange request:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
+
+// 사용자 재정 요약 API (관리자용)
+app.get(
+  "/api/admin/users-financial-summary",
+  auth("admin"),
+  async (req, res) => {
+    try {
+      const users = await User.find().select("-password").lean();
+      const depositsCollection = mongoose.connection.db.collection("deposits");
+      const exchangeRequestsCollection =
+        mongoose.connection.db.collection("exchangerequests");
+
+      const summaries = [];
+
+      for (const user of users) {
+        const userIdStr = user._id.toString();
+
+        // 총 충전액 계산
+        const approvedDeposits = await depositsCollection
+          .find({
+            userId: new mongoose.Types.ObjectId(user._id), // ObjectId로 비교
+            status: "approved",
+          })
+          .toArray();
+        const totalDeposited = approvedDeposits.reduce(
+          (sum, dep) => sum + (dep.amount || 0),
+          0
+        );
+
+        // 총 환전액 계산
+        const approvedExchanges = await exchangeRequestsCollection
+          .find({
+            userId: new mongoose.Types.ObjectId(user._id), // ObjectId로 비교
+            status: "approved",
+          })
+          .toArray();
+        const totalExchanged = approvedExchanges.reduce(
+          (sum, ex) => sum + (ex.actualAmount || 0),
+          0
+        );
+
+        const financialProfit = user.balance + totalExchanged - totalDeposited;
+
+        summaries.push({
+          username: user.username,
+          userId: user._id,
+          currentBalance: user.balance,
+          totalDeposited,
+          totalExchanged,
+          financialProfit,
+          isApproved: user.isApproved,
+          role: user.role,
+        });
+      }
+
+      // 순손익이 높은 순으로 정렬
+      summaries.sort((a, b) => b.financialProfit - a.financialProfit);
+
+      res.json(summaries);
+    } catch (err) {
+      console.error("Error fetching users financial summary:", err);
+      res.status(500).json({ message: "서버 에러" });
+    }
+  }
+);
 
 // =====================
 // 서버 시작
