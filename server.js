@@ -214,7 +214,8 @@ app.get("/api/admin/users", auth("admin"), async (req, res) => {
 app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
   try {
     const users = await User.find().select("-password");
-    const stats = users.map((user) => {
+
+    const statsPromises = users.map(async (user) => {
       const wins = user.bettingHistory.filter(
         (bet) => bet.result === "win"
       ).length;
@@ -225,30 +226,46 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
       const winRate =
         totalBets === 0 ? 0 : ((wins / totalBets) * 100).toFixed(2);
 
-      // 사용자 순손익 계산
-      let netProfit = 0;
+      // 사용자 베팅 순손익 계산
+      let bettingNetProfit = 0;
       if (user.bettingHistory && user.bettingHistory.length > 0) {
         user.bettingHistory.forEach((bet) => {
           const betAmount = bet.amount;
           if (bet.result === "win") {
             if (bet.choice === "player") {
-              netProfit += betAmount; // 플레이어 승리: 베팅액 1배 수익 (총 2배 지급)
+              bettingNetProfit += betAmount;
             } else if (bet.choice === "banker") {
-              netProfit += betAmount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
+              bettingNetProfit += betAmount * 0.95;
             } else if (bet.choice === "tie") {
-              netProfit += betAmount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
+              bettingNetProfit += betAmount * 4;
             } else if (
               bet.choice === "player_pair" ||
               bet.choice === "banker_pair"
             ) {
-              netProfit += betAmount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
+              bettingNetProfit += betAmount * 10;
             }
           } else if (bet.result === "lose") {
-            netProfit -= betAmount; // 패배: 베팅액만큼 손실
+            bettingNetProfit -= betAmount;
           }
-          // 무승부 (P/B 베팅 후 타이 결과): 순손익 0 (원금 반환)이므로 별도 처리 안함
         });
       }
+
+      // 사용자 총 충전액 계산
+      const userDeposits = await mongoose.connection.db
+        .collection("deposits")
+        .find({
+          userId: user._id, // user._id는 ObjectId입니다.
+          status: "approved",
+        })
+        .toArray();
+
+      const totalChargedAmount = userDeposits.reduce(
+        (sum, dep) => sum + (dep.amount || 0),
+        0
+      );
+
+      // 최종 순손익 계산
+      const overallNetProfit = bettingNetProfit - totalChargedAmount;
 
       return {
         _id: user._id,
@@ -260,12 +277,16 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
         losses,
         totalBets,
         winRate,
-        netProfit: netProfit, // 순손익 추가
+        bettingNetProfit: bettingNetProfit,
+        totalChargedAmount: totalChargedAmount,
+        overallNetProfit: overallNetProfit,
       };
     });
 
+    const stats = await Promise.all(statsPromises);
     res.json(stats);
   } catch (err) {
+    // console.error("Error in /api/admin/users-stats:", err); // 디버깅용
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -598,8 +619,7 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
         });
 
         await user.save();
-      } catch (err) {
-      }
+      } catch (err) {}
     }
 
     // 결과 전송
@@ -766,7 +786,10 @@ io.on("connection", (socket) => {
       }
 
       // Update pending deduction for this user
-      userBalanceUpdates.set(userId, (userBalanceUpdates.get(userId) || 0) + amount);
+      userBalanceUpdates.set(
+        userId,
+        (userBalanceUpdates.get(userId) || 0) + amount
+      );
 
       // Clear any existing save timeout for this user
       if (pendingUserSaves.has(userId)) {
@@ -774,22 +797,25 @@ io.on("connection", (socket) => {
       }
 
       // Schedule a debounced save
-      pendingUserSaves.set(userId, setTimeout(async () => {
-        try {
-          const userToUpdate = await User.findById(userId);
-          if (userToUpdate) {
-            const totalDeduction = userBalanceUpdates.get(userId) || 0;
-            userToUpdate.balance -= totalDeduction;
-            await userToUpdate.save();
-            userBalanceUpdates.delete(userId); // Clear pending update for this user
-            pendingUserSaves.delete(userId);
-            // Optionally emit an event to the user confirming balance save if needed
-            // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+      pendingUserSaves.set(
+        userId,
+        setTimeout(async () => {
+          try {
+            const userToUpdate = await User.findById(userId);
+            if (userToUpdate) {
+              const totalDeduction = userBalanceUpdates.get(userId) || 0;
+              userToUpdate.balance -= totalDeduction;
+              await userToUpdate.save();
+              userBalanceUpdates.delete(userId); // Clear pending update for this user
+              pendingUserSaves.delete(userId);
+              // Optionally emit an event to the user confirming balance save if needed
+              // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+            }
+          } catch (err) {
+            // Handle error during debounced save
           }
-        } catch (err) {
-          // Handle error during debounced save
-        }
-      }, 500)); // 500ms debounce time
+        }, 500)
+      ); // 500ms debounce time
 
       // 베팅 저장
       const bet = {
@@ -893,27 +919,30 @@ io.on("connection", (socket) => {
 
       // Schedule/Reschedule a debounced save
       // The timeout will apply the net change from userBalanceUpdates
-      pendingUserSaves.set(userId, setTimeout(async () => {
-        try {
-          const userToUpdate = await User.findById(userId);
-          if (userToUpdate) {
-            const netChange = userBalanceUpdates.get(userId) || 0;
-            // Apply netChange to the balance fetched from DB
-            // If netChange is negative (bets > cancels), balance decreases.
-            // If netChange is positive (cancels > bets, or just cancels), balance increases.
-            userToUpdate.balance -= netChange; // Since userBalanceUpdates stores deductions as positive
-            await userToUpdate.save();
-            
-            userBalanceUpdates.delete(userId); // Clear pending update for this user
-            pendingUserSaves.delete(userId);
-            // Optionally emit an event to the user confirming balance save
-            // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+      pendingUserSaves.set(
+        userId,
+        setTimeout(async () => {
+          try {
+            const userToUpdate = await User.findById(userId);
+            if (userToUpdate) {
+              const netChange = userBalanceUpdates.get(userId) || 0;
+              // Apply netChange to the balance fetched from DB
+              // If netChange is negative (bets > cancels), balance decreases.
+              // If netChange is positive (cancels > bets, or just cancels), balance increases.
+              userToUpdate.balance -= netChange; // Since userBalanceUpdates stores deductions as positive
+              await userToUpdate.save();
+
+              userBalanceUpdates.delete(userId); // Clear pending update for this user
+              pendingUserSaves.delete(userId);
+              // Optionally emit an event to the user confirming balance save
+              // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+            }
+          } catch (err) {
+            // Handle error during debounced save
+            // Consider how to retry or log this critical failure
           }
-        } catch (err) {
-          // Handle error during debounced save
-          // Consider how to retry or log this critical failure
-        }
-      }, 500)); // 500ms debounce time
+        }, 500)
+      ); // 500ms debounce time
 
       // 베팅 통계 업데이트 (차감)
       if (currentBettingStats[betToCancel.choice]) {
@@ -1169,8 +1198,7 @@ io.on("connection", (socket) => {
           });
 
           await user.save();
-        } catch (err) {
-        }
+        } catch (err) {}
       }
 
       // 결과 전송
@@ -1224,8 +1252,7 @@ io.on("connection", (socket) => {
     io.emit("result_rejected");
   });
 
-  socket.on("disconnect", () => {
-  });
+  socket.on("disconnect", () => {});
 
   // game.html로부터 카드 정보를 받아 user.html로 전달하는 로직
   socket.on("card_dealt_to_user_ui", (data) => {
@@ -1548,5 +1575,4 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
 // 서버 시작
 // =====================
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-});
+server.listen(PORT, () => {});
