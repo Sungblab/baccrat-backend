@@ -38,8 +38,8 @@ const io = socketIo(server, {
 // MongoDB 연결
 mongoose
   .connect(MONGO_URI)
-  .then(() => console.log("MongoDB 연결됨"))
-  .catch((err) => console.error("MongoDB 연결 에러:", err));
+  .then(() => {})
+  .catch((err) => {});
 
 // 사용자 스키마 및 모델 정의
 const userSchema = new mongoose.Schema({
@@ -148,7 +148,6 @@ app.post("/api/auth/register", async (req, res) => {
 
     res.json({ message: "회원가입이 완료되었습니다. 승인이 필요합니다." });
   } catch (err) {
-    console.error("회원가입 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -176,7 +175,6 @@ app.post("/api/auth/login", async (req, res) => {
 
     res.json({ token });
   } catch (err) {
-    console.error("로그인 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -196,7 +194,6 @@ app.get("/api/auth/user-info", auth(), async (req, res) => {
       rollingBalance: user.rollingBalance || 0,
     });
   } catch (err) {
-    console.error("사용자 정보 가져오기 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -209,7 +206,6 @@ app.get("/api/admin/users", auth("admin"), async (req, res) => {
     const users = await User.find().select("-password");
     res.json(users);
   } catch (err) {
-    console.error("사용자 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -270,7 +266,6 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
 
     res.json(stats);
   } catch (err) {
-    console.error("사용자 통계 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -308,7 +303,6 @@ app.get("/api/admin/leaderboard", auth("admin"), async (req, res) => {
 
     res.json(leaderboard);
   } catch (err) {
-    console.error("리더보드 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -332,7 +326,6 @@ app.delete("/api/admin/users/:id", auth("admin"), async (req, res) => {
     await User.findByIdAndDelete(req.params.id);
     res.json({ message: "사용자가 삭제되었습니다." });
   } catch (err) {
-    console.error("사용자 삭제 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -354,7 +347,6 @@ app.put(
       await user.save();
       res.json({ message: "비밀번호가 초기화되었습니다." });
     } catch (err) {
-      console.error("비밀번호 초기화 에러:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -372,7 +364,6 @@ app.put("/api/admin/users/:id/make-admin", auth("admin"), async (req, res) => {
 
     res.json({ message: "관리자로 지정되었습니다." });
   } catch (err) {
-    console.error("관리자 지정 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -398,7 +389,6 @@ app.put("/api/admin/users/:id/approve", auth("admin"), async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("사용자 승인 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -424,7 +414,6 @@ app.put(
         balance: user.balance,
       });
     } catch (err) {
-      console.error("코인 조절 에러:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -462,7 +451,6 @@ app.get("/api/admin/all-betting-history", auth("admin"), async (req, res) => {
 
     res.json(allBets);
   } catch (err) {
-    console.error("전체 베팅 기록 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -480,7 +468,6 @@ function calculateProfit(bet) {
     }
     return -bet.amount;
   } catch (error) {
-    console.error("수익 계산 에러:", error);
     return 0;
   }
 }
@@ -543,8 +530,6 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
       totalBets,
       playerCount: uniquePlayers.size,
     });
-
-    console.log(`게임 결과가 설정되었습니다: ${result}`);
 
     // 현재 베팅 내역을 처리
     for (const bet of currentBets) {
@@ -614,7 +599,6 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
 
         await user.save();
       } catch (err) {
-        console.error("베팅 결과 처리 에러:", err);
       }
     }
 
@@ -653,13 +637,10 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
     // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
     // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
-    console.log("게임 결과 승인 완료");
-
     res.json({
       message: "게임 결과가 설정되고 사용자 코인이 업데이트되었습니다.",
     });
   } catch (err) {
-    console.error("게임 결과 설정 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -670,6 +651,11 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
 let currentBets = []; // 현재 베팅 내역 저장
 let bettingActive = false; // 베팅 활성 상태
 let bettingEndTime = null; // 베팅 종료 시간
+
+// Debounce user balance saves
+const pendingUserSaves = new Map(); // <userId, NodeJS.Timeout>
+const userBalanceUpdates = new Map(); // <userId, number> stores cumulative deduction amount
+
 let currentBettingStats = {
   player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
   banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
@@ -754,6 +740,10 @@ io.on("connection", (socket) => {
         return socket.emit("error", "사용자를 찾을 수 없습니다.");
       }
 
+      // Calculate current effective balance
+      const pendingDeduction = userBalanceUpdates.get(userId) || 0;
+      const effectiveBalance = user.balance - pendingDeduction;
+
       // 베팅 제한 확인
       if (
         !["player", "banker", "tie", "player_pair", "banker_pair"].includes(
@@ -763,21 +753,43 @@ io.on("connection", (socket) => {
         return socket.emit("error", "유효하지 않은 선택입니다.");
       }
 
-      // 베팅 금액 한도 (1,000원 ~ 50,000원)
-      if (amount < 1000 || amount > 50000) {
+      // 베팅 금액 한도 (1,000원 ~ 500,000원)
+      if (amount < 1000 || amount > 500000) {
         return socket.emit(
           "error",
-          "베팅 금액은 1,000원에서 50,000원 사이여야 합니다."
+          "베팅 금액은 1,000원에서 500,000원 사이여야 합니다."
         );
       }
 
-      if (user.balance < amount) {
+      if (effectiveBalance < amount) {
         return socket.emit("error", "잔액이 부족합니다.");
       }
 
-      // 베팅 시점에 잔액 차감
-      user.balance -= amount;
-      await user.save();
+      // Update pending deduction for this user
+      userBalanceUpdates.set(userId, (userBalanceUpdates.get(userId) || 0) + amount);
+
+      // Clear any existing save timeout for this user
+      if (pendingUserSaves.has(userId)) {
+        clearTimeout(pendingUserSaves.get(userId));
+      }
+
+      // Schedule a debounced save
+      pendingUserSaves.set(userId, setTimeout(async () => {
+        try {
+          const userToUpdate = await User.findById(userId);
+          if (userToUpdate) {
+            const totalDeduction = userBalanceUpdates.get(userId) || 0;
+            userToUpdate.balance -= totalDeduction;
+            await userToUpdate.save();
+            userBalanceUpdates.delete(userId); // Clear pending update for this user
+            pendingUserSaves.delete(userId);
+            // Optionally emit an event to the user confirming balance save if needed
+            // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+          }
+        } catch (err) {
+          // Handle error during debounced save
+        }
+      }, 500)); // 500ms debounce time
 
       // 베팅 저장
       const bet = {
@@ -825,7 +837,6 @@ io.on("connection", (socket) => {
         `사용자 ${user.username}이(가) 베팅: ${choice}, 금액: ${amount}원`
       );
     } catch (err) {
-      console.error("베팅 에러:", err);
       socket.emit("error", "베팅 처리 중 오류가 발생했습니다.");
     }
   });
@@ -869,9 +880,40 @@ io.on("connection", (socket) => {
       // currentBets에서 해당 베팅 제거
       currentBets.splice(lastBetIndex, 1);
 
-      // 사용자 잔액 복원
-      user.balance += betToCancel.amount;
-      await user.save();
+      // 사용자 잔액 복원 (메모리에서만, DB 저장은 debounce)
+      // Update pending balance change for this user (add back the cancelled amount)
+      const currentPendingChange = userBalanceUpdates.get(userId) || 0;
+      userBalanceUpdates.set(userId, currentPendingChange - betToCancel.amount); // Subtracting a "deduction" means adding back
+
+      // Clear any existing save timeout for this user
+      if (pendingUserSaves.has(userId)) {
+        clearTimeout(pendingUserSaves.get(userId));
+        pendingUserSaves.delete(userId);
+      }
+
+      // Schedule/Reschedule a debounced save
+      // The timeout will apply the net change from userBalanceUpdates
+      pendingUserSaves.set(userId, setTimeout(async () => {
+        try {
+          const userToUpdate = await User.findById(userId);
+          if (userToUpdate) {
+            const netChange = userBalanceUpdates.get(userId) || 0;
+            // Apply netChange to the balance fetched from DB
+            // If netChange is negative (bets > cancels), balance decreases.
+            // If netChange is positive (cancels > bets, or just cancels), balance increases.
+            userToUpdate.balance -= netChange; // Since userBalanceUpdates stores deductions as positive
+            await userToUpdate.save();
+            
+            userBalanceUpdates.delete(userId); // Clear pending update for this user
+            pendingUserSaves.delete(userId);
+            // Optionally emit an event to the user confirming balance save
+            // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
+          }
+        } catch (err) {
+          // Handle error during debounced save
+          // Consider how to retry or log this critical failure
+        }
+      }, 500)); // 500ms debounce time
 
       // 베팅 통계 업데이트 (차감)
       if (currentBettingStats[betToCancel.choice]) {
@@ -935,7 +977,6 @@ io.on("connection", (socket) => {
         `사용자 ${user.username}의 베팅 취소: ${betToCancel.choice}, 금액: ${betToCancel.amount}원`
       );
     } catch (err) {
-      console.error("베팅 취소 에러:", err);
       socket.emit("error", "베팅 취소 처리 중 오류가 발생했습니다.");
     }
   });
@@ -974,10 +1015,26 @@ io.on("connection", (socket) => {
   // 결과 승인 처리 수정
   socket.on("approve_result", async (approvedGameData) => {
     if (resultProcessing) {
-      console.log("결과 승인 요청 중복, 이미 처리 중입니다.");
       return;
     }
     resultProcessing = true;
+
+    // Flush all pending balance saves before processing results
+    for (const [userId, timeoutId] of pendingUserSaves) {
+      clearTimeout(timeoutId);
+      try {
+        const userToUpdate = await User.findById(userId);
+        if (userToUpdate) {
+          const netChange = userBalanceUpdates.get(userId) || 0;
+          userToUpdate.balance -= netChange; // Apply net deduction
+          await userToUpdate.save();
+          userBalanceUpdates.delete(userId);
+        }
+      } catch (err) {
+        console.error(`Error flushing balance for user ${userId}:`, err);
+      }
+    }
+    pendingUserSaves.clear(); // All pending saves have been processed or attempted
 
     try {
       // approvedGameData가 없거나, 필요한 result 필드가 없으면 오류 처리
@@ -1113,7 +1170,6 @@ io.on("connection", (socket) => {
 
           await user.save();
         } catch (err) {
-          console.error("베팅 결과 처리 에러:", err);
         }
       }
 
@@ -1152,9 +1208,10 @@ io.on("connection", (socket) => {
       // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
       // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
-      console.log("게임 결과 승인 완료");
+      res.json({
+        message: "게임 결과가 설정되고 사용자 코인이 업데이트되었습니다.",
+      });
     } catch (err) {
-      console.error("게임 결과 승인 처리 에러:", err);
       socket.emit("error", "게임 결과 승인 처리 중 오류가 발생했습니다.");
     } finally {
       resultProcessing = false; // 처리 완료 플래그 해제
@@ -1165,11 +1222,9 @@ io.on("connection", (socket) => {
   socket.on("reject_result", () => {
     currentGameResult = null; // 현재 게임 결과 초기화
     io.emit("result_rejected");
-    console.log("게임 결과 거절됨");
   });
 
   socket.on("disconnect", () => {
-    console.log("클라이언트 연결 종료:", socket.id);
   });
 
   // game.html로부터 카드 정보를 받아 user.html로 전달하는 로직
@@ -1261,7 +1316,6 @@ app.get("/api/recent-games", async (req, res) => {
 
     res.json(recentGames);
   } catch (err) {
-    console.error("최근 게임 기록 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1279,7 +1333,6 @@ app.get("/api/admin/recent-games", auth("admin"), async (req, res) => {
 
     res.json(recentGames);
   } catch (err) {
-    console.error("최근 게임 기록 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1312,7 +1365,6 @@ app.put(
         role: user.role,
       });
     } catch (err) {
-      console.error("관리자 토글 에러:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -1322,10 +1374,8 @@ app.put(
 app.delete("/api/admin/reset-game-history", auth("admin"), async (req, res) => {
   try {
     await Game.deleteMany({});
-    console.log("게임 기록이 초기화되었습니다.");
     res.json({ message: "게임 기록이 초기화되었습니다." });
   } catch (err) {
-    console.error("게임 기록 초기화 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1432,7 +1482,6 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       newRollingBalance: user.rollingBalance,
     });
   } catch (err) {
-    console.error("환전 신청 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1445,7 +1494,6 @@ app.get("/api/exchange/history", auth(), async (req, res) => {
       .lean();
     res.json(exchanges);
   } catch (err) {
-    console.error("환 내 조회 러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1458,7 +1506,6 @@ app.get("/api/admin/exchange-requests", auth("admin"), async (req, res) => {
       .lean();
     res.json(requests);
   } catch (err) {
-    console.error("환전 요청 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1493,7 +1540,6 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
       message: `환 요청이 ${status === "approved" ? "인" : "거"}었습니다.`,
     });
   } catch (err) {
-    console.error("환전 요청 처리 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1503,5 +1549,4 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
 // =====================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`서버가 포트 ${PORT}에서 실행 중`);
 });
