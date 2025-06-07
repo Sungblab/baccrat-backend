@@ -669,7 +669,7 @@ class BaccaratGame {
   }
 
   initializeDeck() {
-    const suits = ["H", "D", "C", "S"]; // Hearts, Diamonds, Clubs, Spades
+    const suits = ["hearts", "diamonds", "clubs", "spades"]; // 풀네임으로 변경
     const values = [
       "A",
       "2",
@@ -680,7 +680,7 @@ class BaccaratGame {
       "7",
       "8",
       "9",
-      "0", // 10을 0으로 표현 (deckofcardsapi.com 형식)
+      "T", // 10을 T로 표현 (Ten)
       "J",
       "Q",
       "K",
@@ -712,7 +712,7 @@ class BaccaratGame {
   }
 
   getCardValue(card) {
-    if (["J", "Q", "K", "0"].includes(card.value)) return 0; // "T" 대신 "0" 사용
+    if (["J", "Q", "K", "T"].includes(card.value)) return 0; // T(10), J, Q, K는 0
     if (card.value === "A") return 1;
     return parseInt(card.value);
   }
@@ -787,7 +787,7 @@ class BaccaratGame {
     const playerScore = this.calculateHandValue(playerHand);
     const bankerScore = this.calculateHandValue(bankerHand);
 
-    // 내추럴 체크
+    // 내추럴 체크 (8 또는 9)
     if (playerScore.total >= 8 || bankerScore.total >= 8) {
       const { playerPair, bankerPair } = this.checkPairs(
         playerHand,
@@ -796,16 +796,15 @@ class BaccaratGame {
       return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
     }
 
-    // 플레이어 세 번째 카드
+    // 플레이어 세 번째 카드 규칙
     let playerThirdCard = null;
     if (playerScore.total <= 5) {
       playerThirdCard = this.drawCard();
       playerHand.push(playerThirdCard);
     }
 
-    // 뱅커 세 번째 카드
-    const newBankerScore = this.calculateHandValue(bankerHand);
-    if (this.shouldBankerDraw(newBankerScore.total, playerThirdCard)) {
+    // 뱅커 세 번째 카드 규칙
+    if (this.shouldBankerDraw(bankerScore.total, playerThirdCard)) {
       bankerHand.push(this.drawCard());
     }
 
@@ -1081,7 +1080,7 @@ io.on("connection", (socket) => {
         deckInfo: baccaratGame.getDeckInfo(),
       });
 
-      // 기존 user.html 호환을 위한 game_result 이벤트도 전송
+      // admin.html용 게임 결과 이벤트 (페어 정보 포함)
       io.emit("game_result", {
         result: gameResult.result,
         playerScore: gameResult.playerScore,
