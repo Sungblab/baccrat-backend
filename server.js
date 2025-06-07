@@ -696,10 +696,80 @@ class BaccaratGame {
     const remainingDecks = (remainingCards / 52).toFixed(1);
     return { remainingCards, remainingDecks };
   }
+
+  // 승부 조작을 위한 특정 결과 생성 메서드
+  playFixedGame(fixedResult) {
+    const playerHand = [];
+    const bankerHand = [];
+
+    // 원하는 결과에 따라 미리 계산된 카드 조합 사용
+    if (fixedResult === "player") {
+      // 플레이어 승리: 플레이어 9, 뱅커 8
+      playerHand.push({ suit: "H", value: "9", id: "9H_fixed" });
+      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
+      bankerHand.push({ suit: "C", value: "8", id: "8C_fixed" });
+      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
+    } else if (fixedResult === "banker") {
+      // 뱅커 승리: 뱅커 9, 플레이어 8
+      playerHand.push({ suit: "H", value: "8", id: "8H_fixed" });
+      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
+      bankerHand.push({ suit: "C", value: "9", id: "9C_fixed" });
+      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
+    } else if (fixedResult === "tie") {
+      // 타이: 둘 다 8
+      playerHand.push({ suit: "H", value: "8", id: "8H_fixed" });
+      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
+      bankerHand.push({ suit: "C", value: "8", id: "8C_fixed" });
+      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
+    }
+
+    // 만약 원하는 결과가 나오지 않으면 추가 카드로 조정
+    let playerScore = this.calculateHandValue(playerHand);
+    let bankerScore = this.calculateHandValue(bankerHand);
+
+    // 결과 확인 및 필요시 추가 조정
+    let currentResult;
+    if (playerScore.total > bankerScore.total) {
+      currentResult = "player";
+    } else if (playerScore.total < bankerScore.total) {
+      currentResult = "banker";
+    } else {
+      currentResult = "tie";
+    }
+
+    // 원하는 결과와 다르면 강제로 조정
+    if (currentResult !== fixedResult) {
+      if (fixedResult === "player" && currentResult !== "player") {
+        // 플레이어가 이기도록 강제 조정
+        playerHand[0] = { suit: "H", value: "9", id: "9H_forced" };
+        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
+        bankerHand[0] = { suit: "C", value: "7", id: "7C_forced" };
+        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
+      } else if (fixedResult === "banker" && currentResult !== "banker") {
+        // 뱅커가 이기도록 강제 조정
+        playerHand[0] = { suit: "H", value: "7", id: "7H_forced" };
+        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
+        bankerHand[0] = { suit: "C", value: "9", id: "9C_forced" };
+        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
+      } else if (fixedResult === "tie" && currentResult !== "tie") {
+        // 타이가 되도록 강제 조정
+        playerHand[0] = { suit: "H", value: "8", id: "8H_forced" };
+        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
+        bankerHand[0] = { suit: "C", value: "8", id: "8C_forced" };
+        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
+      }
+    }
+
+    const { playerPair, bankerPair } = this.checkPairs(playerHand, bankerHand);
+    return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
+  }
 }
 
 // 전역 게임 인스턴스 생성
 const baccaratGame = new BaccaratGame();
+
+// 승부 조작 관련 변수
+let fixedGameResult = null; // 조작된 게임 결과 저장
 
 // 카드 정보를 user.html로 전송하는 함수
 function sendCardsToUserHtml(gameResult, callback) {
@@ -932,8 +1002,14 @@ io.on("connection", (socket) => {
       io.emit("betting_closed");
     }
 
-    // 게임 실행
-    const gameResult = baccaratGame.playGame();
+    // 게임 실행 (조작된 결과가 있으면 그것을 사용)
+    let gameResult;
+    if (fixedGameResult) {
+      gameResult = baccaratGame.playFixedGame(fixedGameResult);
+      fixedGameResult = null; // 사용 후 초기화
+    } else {
+      gameResult = baccaratGame.playGame();
+    }
 
     // 현재 게임 결과 저장 (베팅 통계 포함)
     const processedGameResult = {
@@ -981,6 +1057,18 @@ io.on("connection", (socket) => {
             date: new Date(processedGameResult.timestamp),
           });
           await game.save();
+
+          // 사용자별 총 베팅 금액 계산
+          const userTotalBets = {};
+          currentBets.forEach((bet) => {
+            if (!userTotalBets[bet.userId]) {
+              userTotalBets[bet.userId] = {};
+            }
+            if (!userTotalBets[bet.userId][bet.choice]) {
+              userTotalBets[bet.userId][bet.choice] = 0;
+            }
+            userTotalBets[bet.userId][bet.choice] += bet.amount;
+          });
 
           // 베팅 정산
           for (const bet of currentBets) {
@@ -1035,21 +1123,73 @@ io.on("connection", (socket) => {
               });
 
               await user.save();
+            } catch (err) {
+              console.error("Bet processing error:", err);
+            }
+          }
+
+          // 승리한 사용자들에게 승리 알림 전송 (중복 제거)
+          const notifiedUsers = new Set();
+          for (const bet of currentBets) {
+            try {
+              const userId = bet.userId.toString();
+              if (notifiedUsers.has(userId + bet.choice)) continue;
+
+              let finalOutcome = "lose";
+              let totalWinnings = 0;
+              const userTotalBetAmount = userTotalBets[bet.userId]
+                ? userTotalBets[bet.userId][bet.choice]
+                : 0;
+
+              if (bet.choice === "player") {
+                if (processedGameResult.result === "player") {
+                  totalWinnings = userTotalBetAmount * 2;
+                  finalOutcome = "win";
+                } else if (processedGameResult.result === "tie") {
+                  totalWinnings = userTotalBetAmount;
+                  finalOutcome = "draw";
+                }
+              } else if (bet.choice === "banker") {
+                if (processedGameResult.result === "banker") {
+                  totalWinnings = userTotalBetAmount * 1.95;
+                  finalOutcome = "win";
+                } else if (processedGameResult.result === "tie") {
+                  totalWinnings = userTotalBetAmount;
+                  finalOutcome = "draw";
+                }
+              } else if (bet.choice === "tie") {
+                if (processedGameResult.result === "tie") {
+                  totalWinnings = userTotalBetAmount * 9; // 8:1
+                  finalOutcome = "win";
+                }
+              } else if (bet.choice === "player_pair") {
+                if (processedGameResult.playerPairOccurred) {
+                  totalWinnings = userTotalBetAmount * 12; // 11:1
+                  finalOutcome = "win";
+                }
+              } else if (bet.choice === "banker_pair") {
+                if (processedGameResult.bankerPairOccurred) {
+                  totalWinnings = userTotalBetAmount * 12; // 11:1
+                  finalOutcome = "win";
+                }
+              }
 
               // 승리한 사용자에게 승리 알림 전송
               if (finalOutcome === "win") {
-                const userSocket = userSockets.get(bet.userId.toString());
+                const userSocket = userSockets.get(userId);
                 if (userSocket) {
                   userSocket.emit("you_won", {
                     choice: bet.choice,
-                    amount: bet.amount,
-                    winnings: finalWinnings,
+                    totalBetAmount: userTotalBetAmount,
+                    winnings: totalWinnings,
                     gameResult: processedGameResult.result,
                   });
+                  notifiedUsers.add(userId + bet.choice);
+                } else {
                 }
               }
             } catch (err) {
-              console.error("Bet processing error:", err);
+              console.error("Win notification error:", err);
             }
           }
 
@@ -1129,6 +1269,32 @@ io.on("connection", (socket) => {
   // 덱 정보 요청
   socket.on("get_deck_info", () => {
     socket.emit("deck_info", baccaratGame.getDeckInfo());
+  });
+
+  // 승부 조작 이벤트 (관리자 전용)
+  socket.on("admin_fix_result", (data) => {
+    const { result } = data;
+
+    // 베팅이 활성화되어 있을 때만 조작 가능
+    if (!bettingActive) {
+      return socket.emit("error", "베팅 시간이 아닙니다.");
+    }
+
+    // 유효한 결과인지 확인
+    if (!["player", "banker", "tie"].includes(result)) {
+      return socket.emit("error", "유효하지 않은 결과입니다.");
+    }
+
+    // 조작된 결과 설정
+    fixedGameResult = result;
+
+    // 관리자에게 확인 메시지 전송
+    socket.emit("result_fixed", {
+      message: `다음 게임 결과가 ${
+        result === "player" ? "플레이어" : result === "banker" ? "뱅커" : "타이"
+      }로 설정되었습니다.`,
+      fixedResult: result,
+    });
   });
 
   // 베팅 데이터 수신
