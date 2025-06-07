@@ -260,8 +260,8 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
   }
 });
 
-// 리더보드 API 수정
-app.get("/api/admin/leaderboard", auth("admin"), async (req, res) => {
+// 리더보드 데이터 생성 함수
+async function generateLeaderboardData() {
   try {
     const users = await User.find().select("username balance bettingHistory");
 
@@ -291,6 +291,28 @@ app.get("/api/admin/leaderboard", auth("admin"), async (req, res) => {
     // 잔액 보유량으로 정렬
     leaderboard.sort((a, b) => b.balance - a.balance);
 
+    return leaderboard;
+  } catch (err) {
+    console.error("리더보드 데이터 생성 오류:", err);
+    return [];
+  }
+}
+
+// 리더보드 업데이트 및 브로드캐스트 함수
+async function updateAndBroadcastLeaderboard() {
+  try {
+    const leaderboard = await generateLeaderboardData();
+    // 모든 관리자에게 리더보드 업데이트 전송
+    io.emit("leaderboard_updated", leaderboard);
+  } catch (err) {
+    console.error("리더보드 브로드캐스트 오류:", err);
+  }
+}
+
+// 리더보드 API 수정
+app.get("/api/admin/leaderboard", auth("admin"), async (req, res) => {
+  try {
+    const leaderboard = await generateLeaderboardData();
     res.json(leaderboard);
   } catch (err) {
     res.status(500).json({ message: "서버 에러" });
@@ -413,6 +435,9 @@ app.put(
         newBalance: user.balance,
       });
 
+      // 리더보드 업데이트를 위한 새로운 리더보드 데이터 전송
+      await updateAndBroadcastLeaderboard();
+
       res.json({
         message: `잔액액이 조정되었습니다. 현재 잔액: ${user.balance}`,
         balance: user.balance,
@@ -469,9 +494,9 @@ function calculateProfit(bet) {
       } else if (bet.choice === "banker") {
         return bet.amount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
       } else if (bet.choice === "tie") {
-        return bet.amount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
+        return bet.amount * 8; // 타이 승리: 베팅액 8배 수익 (총 9배 지급)
       } else if (bet.choice === "player_pair" || bet.choice === "banker_pair") {
-        return bet.amount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
+        return bet.amount * 11; // 페어 승리: 베팅액 11배 수익 (총 12배 지급)
       }
     } else if (bet.result === "draw") {
       return 0; // 무승부: 원금 반환이므로 손익 0
@@ -483,178 +508,6 @@ function calculateProfit(bet) {
     return 0;
   }
 }
-
-// 게임 결과 저장 시 통계 정보 추가
-app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
-  const { result } = req.body;
-  if (!["player", "banker", "tie"].includes(result)) {
-    return res.status(400).json({ message: "유효하지 않은 결과입니다." });
-  }
-
-  try {
-    // 현재 베팅 통계 계산
-    const stats = {
-      player: { count: 0, total: 0, profit: 0 },
-      banker: { count: 0, total: 0, profit: 0 },
-      tie: { count: 0, total: 0, profit: 0 },
-    };
-
-    let totalBets = 0;
-    let totalProfit = 0;
-    const uniquePlayers = new Set();
-
-    currentBets.forEach((bet) => {
-      stats[bet.choice].count++;
-      stats[bet.choice].total += bet.amount;
-      totalBets += bet.amount;
-      uniquePlayers.add(bet.userId);
-
-      // 수익/손실 계산
-      const profit = calculateProfit({
-        choice: bet.choice,
-        amount: bet.amount,
-        result:
-          bet.choice === result
-            ? "win"
-            : bet.choice === "tie"
-            ? "draw"
-            : "lose",
-      });
-      stats[bet.choice].profit += profit;
-      totalProfit += profit;
-    });
-
-    // 게임 결과 저장
-    const game = new Game({
-      result,
-      stats,
-      totalBets,
-      totalProfit,
-      playerCount: uniquePlayers.size,
-      date: new Date(),
-    });
-    await game.save();
-
-    // 게임 결과를 모든 클라이언트에게 전송
-    io.emit("game_result", {
-      result,
-      stats,
-      totalBets,
-      playerCount: uniquePlayers.size,
-    });
-
-    // 현재 베팅 내역을 처리
-    for (const bet of currentBets) {
-      try {
-        const user = await User.findById(bet.userId);
-        if (!user) continue;
-
-        let outcome = "lose"; // 기본적으로 lose로 설정
-        let winningsToAdd = 0; // 잔액에 추가될 최종 금액 (원금 포함된 배당금 또는 원금만)
-
-        // 주 베팅 (P/B/T) 결과 처리
-        if (["player", "banker", "tie"].includes(bet.choice)) {
-          if (result === "tie") {
-            if (bet.choice === "tie") {
-              winningsToAdd = bet.amount * 5; // 타이 당첨 (5배)
-              outcome = "win";
-            } else {
-              winningsToAdd = bet.amount; // P/B 베팅 후 타이 시 원금 반환
-              outcome = "draw";
-            }
-          } else {
-            // P 또는 B 승리 시
-            if (bet.choice === result) {
-              if (bet.choice === "banker") {
-                winningsToAdd = bet.amount * 1.95; // 뱅커 당첨 (1.95배)
-              } else {
-                // player
-                winningsToAdd = bet.amount * 2; // 플레이어 당첨 (2배)
-              }
-              outcome = "win";
-            }
-            // 패배 시 winningsToAdd는 0이므로 잔액 변동 없음 (이미 베팅시 차감)
-          }
-        }
-
-        // 페어 베팅 결과 처리 (주 베팅과 별개로 정산)
-        if (
-          bet.choice === "player_pair" &&
-          currentGameResult.playerPairOccurred
-        ) {
-          winningsToAdd += bet.amount * 11; // 플레이어 페어 당첨 (11배) - 주 베팅 결과와 합산될 수 있음
-          if (outcome === "lose")
-            outcome = "win"; // 주 베팅이 패배라도 페어가 맞으면 승리
-          else if (outcome === "draw") outcome = "win"; // 무승부였어도 페어 맞으면 승리
-        }
-        if (
-          bet.choice === "banker_pair" &&
-          currentGameResult.bankerPairOccurred
-        ) {
-          winningsToAdd += bet.amount * 11; // 뱅커 페어 당첨 (11배)
-          if (outcome === "lose") outcome = "win";
-          else if (outcome === "draw") outcome = "win";
-        }
-
-        user.balance += winningsToAdd;
-
-        // 롤링 포인트 적립 (베팅액만큼만)
-        user.rollingWagered = (user.rollingWagered || 0) + bet.amount;
-
-        user.bettingHistory.push({
-          choice: bet.choice,
-          amount: bet.amount,
-          result: outcome,
-          gameResult: result,
-          date: new Date(),
-        });
-
-        await user.save();
-      } catch (err) {}
-    }
-
-    // 결과 전송
-    io.emit("result_approved");
-    io.emit("update_coins"); // 클라이언트가 잔액 업데이트 하도록 알림 (이름 변경 고려)
-
-    // 상태 초기화
-    currentBets = [];
-    currentBettingStats = {
-      player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-      banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-      tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-      player_pair: {
-        count: 0,
-        total: 0,
-        bettor_count: 0,
-        total_bet_amount: 0,
-      },
-      banker_pair: {
-        count: 0,
-        total: 0,
-        bettor_count: 0,
-        total_bet_amount: 0,
-      },
-    };
-    currentGameResult = null;
-
-    // 초기화된 통계를 포함하여 베팅 상태를 모든 클라이언트에 즉시 전송
-    io.emit("betting_status", {
-      active: bettingActive,
-      endTime: bettingEndTime,
-      stats: currentBettingStats,
-    });
-
-    // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
-    // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
-
-    res.json({
-      message: "게임 결과가 설정되고 사용자 잔액이 업데이트되었습니다.",
-    });
-  } catch (err) {
-    res.status(500).json({ message: "서버 에러" });
-  }
-});
 
 // =====================
 // 바카라 게임 로직
@@ -853,8 +706,8 @@ function sendCardsToUserHtml(gameResult, callback) {
   // 카드 클리어 신호 전송
   io.emit("clear_cards_display_on_user_html");
 
-  let delay = 800; // 시작 지연시간 증가 (300ms -> 800ms)
-  let interval = 800; // 카드 간격 증가 (400ms -> 800ms)
+  let delay = 1000; // 시작 지연시간 증가 (800ms -> 1000ms)
+  let interval = 1000; // 카드 간격 증가 (800ms -> 1000ms)
 
   setTimeout(() => {
     // 플레이어 첫 번째 카드
@@ -935,7 +788,7 @@ function sendCardsToUserHtml(gameResult, callback) {
 
   // 모든 카드 전송 완료 후 콜백 실행
   // 더 여유있게 계산: 마지막 가능한 카드(6번째) + 추가 대기시간
-  const totalWaitTime = delay + interval * 5 + 1000; // 1초 추가 대기
+  const totalWaitTime = delay + interval * 5 + 1500; // 1.5초 추가 대기
   setTimeout(() => {
     if (callback) {
       callback();
@@ -1064,6 +917,7 @@ io.on("connection", (socket) => {
 
     // 20초 후 베팅 종료
     setTimeout(() => {
+      if (!bettingActive) return; // 이미 다른 로직으로 종료되었다면 실행 안함
       bettingActive = false;
       bettingEndTime = null;
       io.emit("betting_closed");
@@ -1072,28 +926,26 @@ io.on("connection", (socket) => {
 
   // 관리자용 게임 시작 이벤트
   socket.on("admin_start_game", () => {
+    if (bettingActive) {
+      bettingActive = false;
+      bettingEndTime = null;
+      io.emit("betting_closed");
+    }
+
     // 게임 실행
     const gameResult = baccaratGame.playGame();
 
     // 현재 게임 결과 저장 (베팅 통계 포함)
-    currentGameResult = {
+    const processedGameResult = {
       ...gameResult,
       stats: currentBettingStats,
       totalBets: currentBets.reduce((sum, bet) => sum + bet.amount, 0),
       playerCount: new Set(currentBets.map((bet) => bet.userId)).size,
     };
 
-    // 카드 정보를 user.html로 전송하고, 완료 후 게임 결과 전송
-    sendCardsToUserHtml(gameResult, () => {
-      // 카드 전송 완료 후 게임 결과 전송
-
-      // 모든 클라이언트에게 게임 결과 전송 (카드 정보 포함)
-      io.emit("game_result_with_cards", {
-        ...gameResult,
-        deckInfo: baccaratGame.getDeckInfo(),
-      });
-
-      // 관리자에게만 game_result 이벤트 전송 (승인/거절 처리용)
+    // 카드 정보를 user.html로 전송하고, 완료 후 게임 결과 처리
+    sendCardsToUserHtml(gameResult, async () => {
+      // 모든 클라이언트에게 게임 결과 전송
       io.emit("game_result", {
         result: gameResult.result,
         playerScore: gameResult.playerScore,
@@ -1102,6 +954,163 @@ io.on("connection", (socket) => {
         bankerPairOccurred: gameResult.bankerPairOccurred,
         timestamp: gameResult.timestamp,
       });
+
+      // 관리자에게도 카드 정보와 함께 결과 전송
+      io.emit("game_result_with_cards", {
+        ...gameResult,
+        deckInfo: baccaratGame.getDeckInfo(),
+      });
+
+      // 게임 결과를 5초간 표시한 후 처리 시작
+      setTimeout(async () => {
+        // 결과 처리 로직 시작
+        if (resultProcessing) {
+          return;
+        }
+        resultProcessing = true;
+
+        try {
+          // 게임 결과 DB 저장
+          const game = new Game({
+            result: processedGameResult.result,
+            playerPairOccurred: processedGameResult.playerPairOccurred || false,
+            bankerPairOccurred: processedGameResult.bankerPairOccurred || false,
+            stats: processedGameResult.stats,
+            totalBets: processedGameResult.totalBets,
+            playerCount: processedGameResult.playerCount,
+            date: new Date(processedGameResult.timestamp),
+          });
+          await game.save();
+
+          // 베팅 정산
+          for (const bet of currentBets) {
+            try {
+              const user = await User.findById(bet.userId);
+              if (!user) continue;
+
+              let finalWinnings = 0;
+              let finalOutcome = "lose";
+
+              if (bet.choice === "player") {
+                if (processedGameResult.result === "player") {
+                  finalWinnings = bet.amount * 2;
+                  finalOutcome = "win";
+                } else if (processedGameResult.result === "tie") {
+                  finalWinnings = bet.amount;
+                  finalOutcome = "draw";
+                }
+              } else if (bet.choice === "banker") {
+                if (processedGameResult.result === "banker") {
+                  finalWinnings = bet.amount * 1.95;
+                  finalOutcome = "win";
+                } else if (processedGameResult.result === "tie") {
+                  finalWinnings = bet.amount;
+                  finalOutcome = "draw";
+                }
+              } else if (bet.choice === "tie") {
+                if (processedGameResult.result === "tie") {
+                  finalWinnings = bet.amount * 9; // 8:1
+                  finalOutcome = "win";
+                }
+              } else if (bet.choice === "player_pair") {
+                if (processedGameResult.playerPairOccurred) {
+                  finalWinnings = bet.amount * 12; // 11:1
+                  finalOutcome = "win";
+                }
+              } else if (bet.choice === "banker_pair") {
+                if (processedGameResult.bankerPairOccurred) {
+                  finalWinnings = bet.amount * 12; // 11:1
+                  finalOutcome = "win";
+                }
+              }
+
+              user.balance += finalWinnings;
+
+              user.bettingHistory.push({
+                choice: bet.choice,
+                amount: bet.amount,
+                result: finalOutcome,
+                gameResult: processedGameResult.result,
+                date: new Date(),
+              });
+
+              await user.save();
+
+              // 승리한 사용자에게 승리 알림 전송
+              if (finalOutcome === "win") {
+                const userSocket = userSockets.get(bet.userId.toString());
+                if (userSocket) {
+                  userSocket.emit("you_won", {
+                    choice: bet.choice,
+                    amount: bet.amount,
+                    winnings: finalWinnings,
+                    gameResult: processedGameResult.result,
+                  });
+                }
+              }
+            } catch (err) {
+              console.error("Bet processing error:", err);
+            }
+          }
+
+          // 결과 승인됨을 클라이언트에 알림
+          io.emit("result_approved");
+          io.emit("update_coins");
+
+          // 관리자에게 결과 처리 완료 알림
+          io.emit("admin_result_approved", {
+            message: "게임 결과가 자동으로 처리되었습니다.",
+            gameResult: processedGameResult.result,
+            timestamp: new Date(),
+          });
+
+          // 리더보드 업데이트 (게임 결과로 인한 잔액 변동 반영)
+          await updateAndBroadcastLeaderboard();
+
+          // 상태 초기화
+          currentBets = [];
+          currentBettingStats = {
+            player: {
+              count: 0,
+              total: 0,
+              bettor_count: 0,
+              total_bet_amount: 0,
+            },
+            banker: {
+              count: 0,
+              total: 0,
+              bettor_count: 0,
+              total_bet_amount: 0,
+            },
+            tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+            player_pair: {
+              count: 0,
+              total: 0,
+              bettor_count: 0,
+              total_bet_amount: 0,
+            },
+            banker_pair: {
+              count: 0,
+              total: 0,
+              bettor_count: 0,
+              total_bet_amount: 0,
+            },
+          };
+          currentGameResult = null;
+          userCache.clear();
+
+          io.emit("betting_status", {
+            active: bettingActive,
+            endTime: bettingEndTime,
+            stats: currentBettingStats,
+          });
+        } catch (err) {
+          console.error("Game result processing error:", err);
+          socket.emit("error", "게임 결과 처리 중 오류가 발생했습니다.");
+        } finally {
+          resultProcessing = false;
+        }
+      }, 1500); // 1.5초 후 결과 처리
     });
   });
 
@@ -1376,209 +1385,6 @@ io.on("connection", (socket) => {
 
   let resultProcessing = false; // 결과 처리 중복 방지 플래그는 유지
 
-  // 결과 승인 처리 수정
-  socket.on("approve_result", async (approvedGameData) => {
-    if (resultProcessing) {
-      return;
-    }
-    resultProcessing = true;
-
-    // 이제 즉시 잔액 처리를 하므로 별도의 flush 과정이 불필요
-
-    try {
-      // approvedGameData가 없거나, 필요한 result 필드가 없으면 오류 처리
-      if (!approvedGameData || !approvedGameData.result) {
-        // 기존의 currentGameResult를 사용하거나 오류 반환
-        if (!currentGameResult) {
-          throw new Error("승인할 게임 결과 데이터가 없습니다.");
-        }
-        // approvedGameData가 없을 경우, 기존의 currentGameResult를 사용 (페어 정보 X)
-      } else {
-        // admin.html에서 보낸 상세 데이터로 currentGameResult를 설정하거나 업데이트
-        // 이전에 socket.on("game_result", ...) 에서 설정된 stats, totalBets, playerCount 등을 유지하기 위해
-        // approvedGameData의 정보를 기존 currentGameResult에 병합합니다.
-        currentGameResult = {
-          ...(currentGameResult || {}), // 기존 currentGameResult가 null일 수 있으므로 초기값 제공
-          result: approvedGameData.result,
-          playerPairOccurred: approvedGameData.playerPairOccurred || false,
-          bankerPairOccurred: approvedGameData.bankerPairOccurred || false,
-          timestamp: approvedGameData.timestamp
-            ? new Date(approvedGameData.timestamp)
-            : new Date(),
-          // 만약 approvedGameData에 playerScore, bankerScore가 있다면 그것도 반영 가능
-          // 예: playerScore: approvedGameData.playerScore,
-          //     bankerScore: approvedGameData.bankerScore,
-        };
-      }
-
-      if (!currentGameResult || !currentGameResult.result) {
-        // 최종적으로 currentGameResult와 result 필드가 유효한지 다시 한번 확인
-        throw new Error("승인할 최종 게임 결과 정보(result 포함)가 없습니다.");
-      }
-
-      // 게임 결과 저장 시 페어 발생 여부 포함
-      const game = new Game({
-        result: currentGameResult.result,
-        playerPairOccurred: currentGameResult.playerPairOccurred || false,
-        bankerPairOccurred: currentGameResult.bankerPairOccurred || false,
-        stats: currentGameResult.stats,
-        totalBets: currentGameResult.totalBets,
-        playerCount: currentGameResult.playerCount,
-        date: new Date(currentGameResult.timestamp),
-      });
-      await game.save();
-
-      // 최근 게임 결과 조회
-      const recentGames = await Game.find()
-        .select("result date stats totalBets playerCount")
-        .sort({ date: -1 })
-        .limit(36)
-        .lean();
-
-      // 모든 클라이언트에게 최신 게임 결과 전송
-      io.emit("recent_games_updated", {
-        recentGames,
-        stats: {
-          playerWins: recentGames.filter((g) => g.result === "player").length,
-          bankerWins: recentGames.filter((g) => g.result === "banker").length,
-          ties: recentGames.filter((g) => g.result === "tie").length,
-          totalGames: recentGames.length,
-        },
-      });
-
-      // 베팅 결과 처리
-      for (const bet of currentBets) {
-        try {
-          const user = await User.findById(bet.userId);
-          if (!user) continue;
-
-          let outcome = "lose"; // 기본적으로 lose로 설정
-          let winningsToAdd = 0; // 잔액에 추가될 최종 금액 (원금 포함된 배당금 또는 원금만)
-
-          // 주 베팅 (P/B/T) 결과 처리
-          if (["player", "banker", "tie"].includes(bet.choice)) {
-            if (currentGameResult.result === "tie") {
-              if (bet.choice === "tie") {
-                winningsToAdd = bet.amount * 8; // 타이 당첨 (9배)
-                outcome = "win";
-              } else {
-                winningsToAdd = bet.amount; // P/B 베팅 후 타이 시 원금 반환
-                outcome = "draw";
-              }
-            } else {
-              // P 또는 B 승리 시
-              if (bet.choice === currentGameResult.result) {
-                if (bet.choice === "banker") {
-                  winningsToAdd = bet.amount * 1.95; // 뱅커 당첨 (1.95배)
-                } else {
-                  // player
-                  winningsToAdd = bet.amount * 2; // 플레이어 당첨 (2배)
-                }
-                outcome = "win";
-              }
-              // 패배 시 winningsToAdd는 0이므로 잔액 변동 없음 (이미 베팅시 차감)
-            }
-          }
-
-          // 페어 베팅 결과 처리 (주 베팅과 별개로 정산)
-          if (
-            bet.choice === "player_pair" &&
-            currentGameResult.playerPairOccurred
-          ) {
-            winningsToAdd += bet.amount * 11; // 플레이어 페어 당첨 (11배) - 주 베팅 결과와 합산될 수 있음
-            if (outcome === "lose")
-              outcome = "win"; // 주 베팅이 패배라도 페어가 맞으면 승리
-            else if (outcome === "draw") outcome = "win"; // 무승부였어도 페어 맞으면 승리
-          }
-          if (
-            bet.choice === "banker_pair" &&
-            currentGameResult.bankerPairOccurred
-          ) {
-            winningsToAdd += bet.amount * 11; // 뱅커 페어 당첨 (11배)
-            if (outcome === "lose") outcome = "win";
-            else if (outcome === "draw") outcome = "win";
-          }
-
-          user.balance += winningsToAdd;
-
-          // 롤링 포인트 적립 (베팅액만큼만)
-          user.rollingWagered = (user.rollingWagered || 0) + bet.amount;
-
-          // 베팅 기록 추가
-          user.bettingHistory.push({
-            choice: bet.choice,
-            amount: bet.amount,
-            result: outcome,
-            gameResult: currentGameResult.result, // 주 게임 결과 기록
-            // 페어 결과는 여기서 별도로 기록할 수도 있음 (예: gameResultDetails: { playerPair: true })
-            date: new Date(),
-          });
-
-          await user.save();
-        } catch (err) {}
-      }
-
-      // 결과 전송
-      io.emit("result_approved");
-      io.emit("update_coins"); // 클라이언트가 잔액 업데이트 하도록 알림 (이름 변경 고려)
-
-      // 관리자에게 결과 승인 완료 알림
-      io.emit("admin_result_approved", {
-        message: "게임 결과가 성공적으로 승인되어 모든 정산이 완료되었습니다.",
-        gameResult: currentGameResult.result,
-        timestamp: new Date(),
-      });
-
-      // 상태 초기화
-      currentBets = [];
-      currentBettingStats = {
-        player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        player_pair: {
-          count: 0,
-          total: 0,
-          bettor_count: 0,
-          total_bet_amount: 0,
-        },
-        banker_pair: {
-          count: 0,
-          total: 0,
-          bettor_count: 0,
-          total_bet_amount: 0,
-        },
-      };
-      currentGameResult = null;
-
-      // 게임 종료 시 사용자 캐시 초기화 (정확한 잔액 반영 위해)
-      userCache.clear();
-
-      // 초기화된 통계를 포함하여 베팅 상태를 모든 클라이언트에 즉시 전송
-      io.emit("betting_status", {
-        active: bettingActive,
-        endTime: bettingEndTime,
-        stats: currentBettingStats,
-      });
-
-      // 모든 유저에게 빈 개인 베팅 현황 전송 (초기화)
-      // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
-
-      res.json({
-        message: "게임 결과가 설정되고 사용자 잔액이 업데이트되었습니다.",
-      });
-    } catch (err) {
-      socket.emit("error", "게임 결과 승인 처리 중 오류가 발생했습니다.");
-    } finally {
-      resultProcessing = false; // 처리 완료 플래그 해제
-    }
-  });
-
-  // 결과 거절 처리
-  socket.on("reject_result", () => {
-    currentGameResult = null; // 현재 게임 결과 초기화
-    io.emit("result_rejected");
-  });
-
   socket.on("disconnect", () => {});
 
   // game.html로부터 카드 정보를 받아 user.html로 전달하는 로직
@@ -1670,7 +1476,9 @@ const Game = mongoose.model("Game", gameSchema);
 app.get("/api/recent-games", async (req, res) => {
   try {
     const recentGames = await Game.find()
-      .select("result date stats totalBets playerCount")
+      .select(
+        "result date stats totalBets playerCount playerPairOccurred bankerPairOccurred"
+      )
       .sort({ date: -1 })
       .limit(36)
       .lean();
@@ -1687,7 +1495,9 @@ app.get("/api/admin/recent-games", auth("admin"), async (req, res) => {
 
   try {
     const recentGames = await Game.find()
-      .select("result date stats totalBets playerCount")
+      .select(
+        "result date stats totalBets playerCount playerPairOccurred bankerPairOccurred"
+      )
       .sort({ date: -1 })
       .limit(parseInt(limit))
       .lean();
@@ -2082,6 +1892,18 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
       }
     }
 
+    // 환전 승인 시 리더보드 업데이트
+    if (status === "approved") {
+      // 모든 관리자에게 사용자 잔액 업데이트 알림
+      io.emit("user_balance_updated", {
+        userId: user._id.toString(),
+        newBalance: user.balance,
+      });
+
+      // 리더보드 업데이트
+      await updateAndBroadcastLeaderboard();
+    }
+
     res.json({
       message: `환전 요청이 ${
         status === "approved" ? "승인" : "거절"
@@ -2272,6 +2094,9 @@ app.put("/api/admin/deposit-requests/:id", auth("admin"), async (req, res) => {
         userId: user._id.toString(),
         newBalance: user.balance,
       });
+
+      // 리더보드 업데이트
+      await updateAndBroadcastLeaderboard();
     } else {
       // 거절된 경우에도 사용자에게 알림
       const userSocket = userSockets.get(user._id.toString());
@@ -2466,6 +2291,9 @@ app.post("/api/transfer/send", auth(), async (req, res) => {
       // 송금 내역 새로고침 신호
       fromUserSocket.emit("transfer_history_updated");
     }
+
+    // 리더보드 업데이트 (송금으로 인한 잔액 변동 반영)
+    await updateAndBroadcastLeaderboard();
 
     res.json({
       message: "송금이 완료되었습니다.",
@@ -2670,6 +2498,9 @@ app.post(
         fromUserSocket.emit("transfer_history_updated");
         fromUserSocket.emit("received_requests_updated");
       }
+
+      // 리더보드 업데이트 (머니 요청 수락으로 인한 잔액 변동 반영)
+      await updateAndBroadcastLeaderboard();
 
       res.json({
         message: "요청을 수락했습니다.",
