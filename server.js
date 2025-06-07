@@ -77,10 +77,8 @@ const userSchema = new mongoose.Schema({
       date: { type: Date, default: Date.now },
     },
   ],
-  rollingBalance: {
-    type: Number,
-    default: 0,
-  },
+  rollingDeposit: { type: Number, default: 0 }, // 롤링 대상이 되는 누적 충전액
+  rollingWagered: { type: Number, default: 0 }, // 롤링을 위해 누적된 베팅액
 });
 
 const User = mongoose.model("User", userSchema);
@@ -139,7 +137,7 @@ app.post("/api/auth/register", async (req, res) => {
       return res.status(400).json({ message: "이미 존재하는 사용자입니다." });
     }
 
-    user = new User({ username, password }); // 기본 코인 수는 스키마에서 설정
+    user = new User({ username, password }); // 기본 잔액 수는 스키마에서 설정
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(password, salt);
@@ -187,11 +185,19 @@ app.get("/api/auth/user-info", auth(), async (req, res) => {
       return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
     }
 
+    // 환전 가능 금액 계산: 베팅한 금액만큼 환전 가능
+    const rollingRequirement = (user.rollingDeposit || 0) * 1.5;
+    const rollingWagered = user.rollingWagered || 0;
+    // 베팅한 금액만큼은 언제든지 환전 가능
+    const maxExchangeAmount = Math.min(user.balance, rollingWagered);
+
     res.json({
       username: user.username,
       balance: user.balance,
       bettingHistory: user.bettingHistory,
-      rollingBalance: user.rollingBalance || 0,
+      rollingDeposit: user.rollingDeposit || 0,
+      rollingWagered: rollingWagered,
+      maxExchangeAmount,
     });
   } catch (err) {
     res.status(500).json({ message: "서버 에러" });
@@ -225,28 +231,12 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
       const winRate =
         totalBets === 0 ? 0 : ((wins / totalBets) * 100).toFixed(2);
 
-      // 사용자 순손익 계산
+      // 사용자 순손익 계산 (calculateProfit 함수와 동일한 로직 사용)
       let netProfit = 0;
       if (user.bettingHistory && user.bettingHistory.length > 0) {
         user.bettingHistory.forEach((bet) => {
-          const betAmount = bet.amount;
-          if (bet.result === "win") {
-            if (bet.choice === "player") {
-              netProfit += betAmount; // 플레이어 승리: 베팅액 1배 수익 (총 2배 지급)
-            } else if (bet.choice === "banker") {
-              netProfit += betAmount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
-            } else if (bet.choice === "tie") {
-              netProfit += betAmount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
-            } else if (
-              bet.choice === "player_pair" ||
-              bet.choice === "banker_pair"
-            ) {
-              netProfit += betAmount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
-            }
-          } else if (bet.result === "lose") {
-            netProfit -= betAmount; // 패배: 베팅액만큼 손실
-          }
-          // 무승부 (P/B 베팅 후 타이 결과): 순손익 0 (원금 반환)이므로 별도 처리 안함
+          const profit = calculateProfit(bet);
+          netProfit += profit;
         });
       }
 
@@ -298,7 +288,7 @@ app.get("/api/admin/leaderboard", auth("admin"), async (req, res) => {
       };
     });
 
-    // 코인 보유량으로 정렬
+    // 잔액 보유량으로 정렬
     leaderboard.sort((a, b) => b.balance - a.balance);
 
     res.json(leaderboard);
@@ -393,7 +383,7 @@ app.put("/api/admin/users/:id/approve", auth("admin"), async (req, res) => {
   }
 });
 
-// 코인 조절하기
+// 잔액 조절하기
 app.put(
   "/api/admin/users/:id/adjust-coins",
   auth("admin"),
@@ -409,9 +399,24 @@ app.put(
       if (user.balance < 0) user.balance = 0;
       await user.save();
 
+      // 해당 사용자에게 실시간으로 잔액 업데이트 알림
+      const userSocket = userSockets.get(user._id.toString());
+      if (userSocket) {
+        userSocket.emit("balance_updated", {
+          newBalance: user.balance,
+        });
+      }
+
+      // 모든 관리자에게 사용자 잔액 변경 알림
+      io.emit("user_balance_updated", {
+        userId: user._id.toString(),
+        newBalance: user.balance,
+      });
+
       res.json({
-        message: `코인이 조정되었습니다. 현재 코인: ${user.balance}`,
+        message: `잔액액이 조정되었습니다. 현재 잔액: ${user.balance}`,
         balance: user.balance,
+        newBalance: user.balance, // 관리자 페이지에서 사용할 새 잔액 정보
       });
     } catch (err) {
       res.status(500).json({ message: "서버 에러" });
@@ -459,14 +464,21 @@ app.get("/api/admin/all-betting-history", auth("admin"), async (req, res) => {
 function calculateProfit(bet) {
   try {
     if (bet.result === "win") {
-      if (bet.choice === "tie") {
-        return bet.amount * 5;
+      if (bet.choice === "player") {
+        return bet.amount; // 플레이어 승리: 베팅액 1배 수익 (총 2배 지급)
+      } else if (bet.choice === "banker") {
+        return bet.amount * 0.95; // 뱅커 승리: 베팅액 0.95배 수익 (총 1.95배 지급)
+      } else if (bet.choice === "tie") {
+        return bet.amount * 4; // 타이 승리: 베팅액 4배 수익 (총 5배 지급)
+      } else if (bet.choice === "player_pair" || bet.choice === "banker_pair") {
+        return bet.amount * 10; // 페어 승리: 베팅액 10배 수익 (총 11배 지급)
       }
-      return bet.amount * 2;
     } else if (bet.result === "draw") {
-      return 0;
+      return 0; // 무승부: 원금 반환이므로 손익 0
+    } else if (bet.result === "lose") {
+      return -bet.amount; // 패배: 베팅액만큼 손실
     }
-    return -bet.amount;
+    return 0;
   } catch (error) {
     return 0;
   }
@@ -586,8 +598,8 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
 
         user.balance += winningsToAdd;
 
-        // 롤링 포인트 적립 (베팅액만큼)
-        user.rollingBalance = (user.rollingBalance || 0) + bet.amount;
+        // 롤링 포인트 적립 (베팅액만큼만)
+        user.rollingWagered = (user.rollingWagered || 0) + bet.amount;
 
         user.bettingHistory.push({
           choice: bet.choice,
@@ -637,12 +649,299 @@ app.post("/api/admin/set-result", auth("admin"), async (req, res) => {
     // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
     res.json({
-      message: "게임 결과가 설정되고 사용자 코인이 업데이트되었습니다.",
+      message: "게임 결과가 설정되고 사용자 잔액이 업데이트되었습니다.",
     });
   } catch (err) {
     res.status(500).json({ message: "서버 에러" });
   }
 });
+
+// =====================
+// 바카라 게임 로직
+// =====================
+class BaccaratGame {
+  constructor() {
+    this.deck = [];
+    this.numberOfDecks = 8;
+    this.reshufflePoint = 52 * 2;
+    this.initializeDeck();
+    this.shuffleDeck();
+  }
+
+  initializeDeck() {
+    const suits = ["H", "D", "C", "S"]; // Hearts, Diamonds, Clubs, Spades
+    const values = [
+      "A",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "0", // 10을 0으로 표현 (deckofcardsapi.com 형식)
+      "J",
+      "Q",
+      "K",
+    ];
+    this.deck = [];
+
+    for (let d = 0; d < this.numberOfDecks; d++) {
+      for (let suit of suits) {
+        for (let value of values) {
+          this.deck.push({ suit, value, id: `${value}${suit}_${d}` });
+        }
+      }
+    }
+  }
+
+  shuffleDeck() {
+    for (let i = this.deck.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
+    }
+  }
+
+  drawCard() {
+    if (this.deck.length < this.reshufflePoint) {
+      this.initializeDeck();
+      this.shuffleDeck();
+    }
+    return this.deck.pop();
+  }
+
+  getCardValue(card) {
+    if (["J", "Q", "K", "0"].includes(card.value)) return 0; // "T" 대신 "0" 사용
+    if (card.value === "A") return 1;
+    return parseInt(card.value);
+  }
+
+  calculateHandValue(hand) {
+    let value = 0;
+    let calculation = [];
+
+    for (let card of hand) {
+      const cardValue = this.getCardValue(card);
+      value = (value + cardValue) % 10;
+      calculation.push(cardValue);
+    }
+
+    return {
+      total: value,
+      calculation: calculation.join(" + "),
+      cards: hand,
+    };
+  }
+
+  shouldBankerDraw(bankerScore, playerThirdCard) {
+    if (bankerScore <= 2) return true;
+    if (bankerScore >= 7) return false;
+    if (!playerThirdCard) return bankerScore <= 5;
+
+    const playerThirdValue = this.getCardValue(playerThirdCard);
+
+    switch (bankerScore) {
+      case 3:
+        return playerThirdValue !== 8;
+      case 4:
+        return [2, 3, 4, 5, 6, 7].includes(playerThirdValue);
+      case 5:
+        return [4, 5, 6, 7].includes(playerThirdValue);
+      case 6:
+        return [6, 7].includes(playerThirdValue);
+      default:
+        return false;
+    }
+  }
+
+  checkPairs(playerHand, bankerHand) {
+    let playerPair = false;
+    let bankerPair = false;
+
+    if (playerHand.length >= 2) {
+      const card1Value = this.getCardValue(playerHand[0]);
+      const card2Value = this.getCardValue(playerHand[1]);
+      playerPair = card1Value === card2Value;
+    }
+
+    if (bankerHand.length >= 2) {
+      const card1Value = this.getCardValue(bankerHand[0]);
+      const card2Value = this.getCardValue(bankerHand[1]);
+      bankerPair = card1Value === card2Value;
+    }
+
+    return { playerPair, bankerPair };
+  }
+
+  playGame() {
+    const playerHand = [];
+    const bankerHand = [];
+
+    // 초기 2장씩 배분
+    playerHand.push(this.drawCard());
+    bankerHand.push(this.drawCard());
+    playerHand.push(this.drawCard());
+    bankerHand.push(this.drawCard());
+
+    const playerScore = this.calculateHandValue(playerHand);
+    const bankerScore = this.calculateHandValue(bankerHand);
+
+    // 내추럴 체크
+    if (playerScore.total >= 8 || bankerScore.total >= 8) {
+      const { playerPair, bankerPair } = this.checkPairs(
+        playerHand,
+        bankerHand
+      );
+      return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
+    }
+
+    // 플레이어 세 번째 카드
+    let playerThirdCard = null;
+    if (playerScore.total <= 5) {
+      playerThirdCard = this.drawCard();
+      playerHand.push(playerThirdCard);
+    }
+
+    // 뱅커 세 번째 카드
+    const newBankerScore = this.calculateHandValue(bankerHand);
+    if (this.shouldBankerDraw(newBankerScore.total, playerThirdCard)) {
+      bankerHand.push(this.drawCard());
+    }
+
+    const { playerPair, bankerPair } = this.checkPairs(playerHand, bankerHand);
+    return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
+  }
+
+  getGameResult(playerHand, bankerHand, playerPair, bankerPair) {
+    const finalPlayerScore = this.calculateHandValue(playerHand);
+    const finalBankerScore = this.calculateHandValue(bankerHand);
+
+    let result;
+    if (finalPlayerScore.total > finalBankerScore.total) {
+      result = "player";
+    } else if (finalPlayerScore.total < finalBankerScore.total) {
+      result = "banker";
+    } else {
+      result = "tie";
+    }
+
+    return {
+      result,
+      playerScore: finalPlayerScore.total,
+      bankerScore: finalBankerScore.total,
+      playerHand: finalPlayerScore,
+      bankerHand: finalBankerScore,
+      playerPairOccurred: playerPair,
+      bankerPairOccurred: bankerPair,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  getDeckInfo() {
+    const remainingCards = this.deck.length;
+    const remainingDecks = (remainingCards / 52).toFixed(1);
+    return { remainingCards, remainingDecks };
+  }
+}
+
+// 전역 게임 인스턴스 생성
+const baccaratGame = new BaccaratGame();
+
+// 카드 정보를 user.html로 전송하는 함수
+function sendCardsToUserHtml(gameResult, callback) {
+  // 카드 클리어 신호 전송
+  io.emit("clear_cards_display_on_user_html");
+
+  let delay = 800; // 시작 지연시간 증가 (300ms -> 800ms)
+  let interval = 800; // 카드 간격 증가 (400ms -> 800ms)
+
+  setTimeout(() => {
+    // 플레이어 첫 번째 카드
+    if (gameResult.playerHand.cards[0]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "player",
+        cardValue: gameResult.playerHand.cards[0].value,
+        cardSuit: gameResult.playerHand.cards[0].suit,
+        cardIndex: 0,
+        isNewHand: true,
+      });
+    }
+  }, delay);
+
+  setTimeout(() => {
+    // 뱅커 첫 번째 카드
+    if (gameResult.bankerHand.cards[0]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "banker",
+        cardValue: gameResult.bankerHand.cards[0].value,
+        cardSuit: gameResult.bankerHand.cards[0].suit,
+        cardIndex: 0,
+        isNewHand: true,
+      });
+    }
+  }, delay + interval);
+
+  setTimeout(() => {
+    // 플레이어 두 번째 카드
+    if (gameResult.playerHand.cards[1]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "player",
+        cardValue: gameResult.playerHand.cards[1].value,
+        cardSuit: gameResult.playerHand.cards[1].suit,
+        cardIndex: 1,
+        isNewHand: false,
+      });
+    }
+  }, delay + interval * 2);
+
+  setTimeout(() => {
+    // 뱅커 두 번째 카드
+    if (gameResult.bankerHand.cards[1]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "banker",
+        cardValue: gameResult.bankerHand.cards[1].value,
+        cardSuit: gameResult.bankerHand.cards[1].suit,
+        cardIndex: 1,
+        isNewHand: false,
+      });
+    }
+  }, delay + interval * 3);
+
+  // 세 번째 카드가 있는 경우
+  setTimeout(() => {
+    if (gameResult.playerHand.cards[2]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "player",
+        cardValue: gameResult.playerHand.cards[2].value,
+        cardSuit: gameResult.playerHand.cards[2].suit,
+        cardIndex: 2,
+        isNewHand: false,
+      });
+    }
+  }, delay + interval * 4);
+
+  setTimeout(() => {
+    if (gameResult.bankerHand.cards[2]) {
+      io.emit("card_dealt_to_user_ui", {
+        target: "banker",
+        cardValue: gameResult.bankerHand.cards[2].value,
+        cardSuit: gameResult.bankerHand.cards[2].suit,
+        cardIndex: 2,
+        isNewHand: false,
+      });
+    }
+  }, delay + interval * 5);
+
+  // 모든 카드 전송 완료 후 콜백 실행
+  // 더 여유있게 계산: 마지막 가능한 카드(6번째) + 추가 대기시간
+  const totalWaitTime = delay + interval * 5 + 1000; // 1초 추가 대기
+  setTimeout(() => {
+    if (callback) {
+      callback();
+    }
+  }, totalWaitTime);
+}
 
 // =====================
 // Socket.io 설정 및 베팅 로직
@@ -651,9 +950,8 @@ let currentBets = []; // 현재 베팅 내역 저장
 let bettingActive = false; // 베팅 활성 상태
 let bettingEndTime = null; // 베팅 종료 시간
 
-// Debounce user balance saves
-const pendingUserSaves = new Map(); // <userId, NodeJS.Timeout>
-const userBalanceUpdates = new Map(); // <userId, number> stores cumulative deduction amount
+// 사용자별 소켓 관리
+const userSockets = new Map(); // <userId, socket>
 
 let currentBettingStats = {
   player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
@@ -686,6 +984,53 @@ io.on("connection", (socket) => {
     stats: currentBettingStats,
   });
 
+  // 베팅이 활성화되어 있으면 베팅 시작 이벤트도 전송
+  if (bettingActive && bettingEndTime) {
+    socket.emit("betting_started");
+    socket.emit("betting_end_time", bettingEndTime);
+
+    // 사용자가 이미 베팅한 내역이 있다면 전송 (소켓 인증 후에 처리)
+    socket.on("request_my_bets", (token) => {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const userId = decoded.id;
+
+        const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
+          if (curBet.userId === userId) {
+            acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
+          }
+          return acc;
+        }, {});
+
+        socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
+      } catch (err) {
+        console.log("내 베팅 정보 요청 처리 실패:", err.message);
+      }
+    });
+  }
+
+  // 사용자 인증 및 소켓 등록
+  socket.on("authenticate", (token) => {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const userId = decoded.id;
+      userSockets.set(userId, socket);
+      socket.userId = userId;
+      console.log(`사용자 ${userId} 소켓 등록됨`);
+    } catch (err) {
+      console.log("소켓 인증 실패:", err.message);
+    }
+  });
+
+  // 연결 해제 시 사용자 소켓 제거
+  socket.on("disconnect", () => {
+    if (socket.userId) {
+      userSockets.delete(socket.userId);
+      console.log(`사용자 ${socket.userId} 소켓 제거됨`);
+    }
+    console.log("클라이언트 연결 해제:", socket.id);
+  });
+
   // 게임 상태 관리
   let gameState = {
     isBetting: false,
@@ -716,6 +1061,62 @@ io.on("connection", (socket) => {
     }, bettingDuration * 1000);
   });
 
+  // 관리자용 게임 시작 이벤트
+  socket.on("admin_start_game", () => {
+    console.log("관리자 게임 시작 요청 받음");
+
+    // 게임 실행
+    const gameResult = baccaratGame.playGame();
+
+    // 현재 게임 결과 저장
+    currentGameResult = gameResult;
+
+    // 카드 정보를 user.html로 전송하고, 완료 후 게임 결과 전송
+    sendCardsToUserHtml(gameResult, () => {
+      // 카드 전송 완료 후 게임 결과 전송
+
+      // 모든 클라이언트에게 게임 결과 전송 (카드 정보 포함)
+      io.emit("game_result_with_cards", {
+        ...gameResult,
+        deckInfo: baccaratGame.getDeckInfo(),
+      });
+
+      // 기존 user.html 호환을 위한 game_result 이벤트도 전송
+      io.emit("game_result", {
+        result: gameResult.result,
+        playerScore: gameResult.playerScore,
+        bankerScore: gameResult.bankerScore,
+        playerPairOccurred: gameResult.playerPairOccurred,
+        bankerPairOccurred: gameResult.bankerPairOccurred,
+        timestamp: gameResult.timestamp,
+      });
+
+      console.log("게임 결과 전송 완료:", gameResult);
+    });
+
+    console.log("게임 결과 생성됨:", gameResult);
+  });
+
+  // 덱 셔플 이벤트
+  socket.on("admin_shuffle_deck", () => {
+    console.log("관리자 덱 셔플 요청 받음");
+    baccaratGame.initializeDeck();
+    baccaratGame.shuffleDeck();
+
+    // 관리자에게 덱 정보 전송
+    io.emit("deck_shuffled", {
+      message: "덱이 셔플되었습니다",
+      deckInfo: baccaratGame.getDeckInfo(),
+    });
+
+    console.log("덱 셔플 완료");
+  });
+
+  // 덱 정보 요청
+  socket.on("get_deck_info", () => {
+    socket.emit("deck_info", baccaratGame.getDeckInfo());
+  });
+
   // 베팅 데이터 수신
   socket.on("place_bet", async (betData) => {
     const { choice, amount, token } = betData;
@@ -739,10 +1140,6 @@ io.on("connection", (socket) => {
         return socket.emit("error", "사용자를 찾을 수 없습니다.");
       }
 
-      // Calculate current effective balance
-      const pendingDeduction = userBalanceUpdates.get(userId) || 0;
-      const effectiveBalance = user.balance - pendingDeduction;
-
       // 베팅 제한 확인
       if (
         !["player", "banker", "tie", "player_pair", "banker_pair"].includes(
@@ -760,41 +1157,14 @@ io.on("connection", (socket) => {
         );
       }
 
-      if (effectiveBalance < amount) {
+      if (user.balance < amount) {
         return socket.emit("error", "잔액이 부족합니다.");
       }
 
-      // Update pending deduction for this user
-      userBalanceUpdates.set(
-        userId,
-        (userBalanceUpdates.get(userId) || 0) + amount
-      );
-
-      // Clear any existing save timeout for this user
-      if (pendingUserSaves.has(userId)) {
-        clearTimeout(pendingUserSaves.get(userId));
-      }
-
-      // Schedule a debounced save
-      pendingUserSaves.set(
-        userId,
-        setTimeout(async () => {
-          try {
-            const userToUpdate = await User.findById(userId);
-            if (userToUpdate) {
-              const totalDeduction = userBalanceUpdates.get(userId) || 0;
-              userToUpdate.balance -= totalDeduction;
-              await userToUpdate.save();
-              userBalanceUpdates.delete(userId); // Clear pending update for this user
-              pendingUserSaves.delete(userId);
-              // Optionally emit an event to the user confirming balance save if needed
-              // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
-            }
-          } catch (err) {
-            // Handle error during debounced save
-          }
-        }, 500)
-      ); // 500ms debounce time
+      // 즉시 잔액 차감
+      user.balance -= amount;
+      user.rollingWagered = (user.rollingWagered || 0) + amount;
+      await user.save();
 
       // 베팅 저장
       const bet = {
@@ -827,7 +1197,10 @@ io.on("connection", (socket) => {
         stats: currentBettingStats, // 전체 통계 객체 전달
       });
 
-      socket.emit("bet_success", "베팅이 완료되었습니다.");
+      socket.emit("bet_success", {
+        message: "베팅이 완료되었습니다.",
+        newBalance: user.balance,
+      });
 
       // 해당 유저의 선택지별 총 베팅액 계산
       const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
@@ -885,43 +1258,9 @@ io.on("connection", (socket) => {
       // currentBets에서 해당 베팅 제거
       currentBets.splice(lastBetIndex, 1);
 
-      // 사용자 잔액 복원 (메모리에서만, DB 저장은 debounce)
-      // Update pending balance change for this user (add back the cancelled amount)
-      const currentPendingChange = userBalanceUpdates.get(userId) || 0;
-      userBalanceUpdates.set(userId, currentPendingChange - betToCancel.amount); // Subtracting a "deduction" means adding back
-
-      // Clear any existing save timeout for this user
-      if (pendingUserSaves.has(userId)) {
-        clearTimeout(pendingUserSaves.get(userId));
-        pendingUserSaves.delete(userId);
-      }
-
-      // Schedule/Reschedule a debounced save
-      // The timeout will apply the net change from userBalanceUpdates
-      pendingUserSaves.set(
-        userId,
-        setTimeout(async () => {
-          try {
-            const userToUpdate = await User.findById(userId);
-            if (userToUpdate) {
-              const netChange = userBalanceUpdates.get(userId) || 0;
-              // Apply netChange to the balance fetched from DB
-              // If netChange is negative (bets > cancels), balance decreases.
-              // If netChange is positive (cancels > bets, or just cancels), balance increases.
-              userToUpdate.balance -= netChange; // Since userBalanceUpdates stores deductions as positive
-              await userToUpdate.save();
-
-              userBalanceUpdates.delete(userId); // Clear pending update for this user
-              pendingUserSaves.delete(userId);
-              // Optionally emit an event to the user confirming balance save
-              // socket.emit("balance_saved", { newBalance: userToUpdate.balance });
-            }
-          } catch (err) {
-            // Handle error during debounced save
-            // Consider how to retry or log this critical failure
-          }
-        }, 500)
-      ); // 500ms debounce time
+      // 즉시 잔액 복원
+      user.balance += betToCancel.amount;
+      await user.save();
 
       // 베팅 통계 업데이트 (차감)
       if (currentBettingStats[betToCancel.choice]) {
@@ -965,7 +1304,7 @@ io.on("connection", (socket) => {
         newBalance: user.balance,
         cancelledBet: betToCancel,
       });
-      io.emit("update_coins"); // 다른 유저에게도 (필요하다면) 코인 업데이트 (여기서는 잔액 변화가 특정 유저에게만 해당)
+      io.emit("update_coins"); // 다른 유저에게도 (필요하다면) 잔액 업데이트 (여기서는 잔액 변화가 특정 유저에게만 해당)
 
       // 해당 유저의 선택지별 총 베팅액 다시 계산하여 전송
       const myCurrentBetsOnChoicesAfterCancel = currentBets.reduce(
@@ -1027,22 +1366,7 @@ io.on("connection", (socket) => {
     }
     resultProcessing = true;
 
-    // Flush all pending balance saves before processing results
-    for (const [userId, timeoutId] of pendingUserSaves) {
-      clearTimeout(timeoutId);
-      try {
-        const userToUpdate = await User.findById(userId);
-        if (userToUpdate) {
-          const netChange = userBalanceUpdates.get(userId) || 0;
-          userToUpdate.balance -= netChange; // Apply net deduction
-          await userToUpdate.save();
-          userBalanceUpdates.delete(userId);
-        }
-      } catch (err) {
-        console.error(`Error flushing balance for user ${userId}:`, err);
-      }
-    }
-    pendingUserSaves.clear(); // All pending saves have been processed or attempted
+    // 이제 즉시 잔액 처리를 하므로 별도의 flush 과정이 불필요
 
     try {
       // approvedGameData가 없거나, 필요한 result 필드가 없으면 오류 처리
@@ -1163,8 +1487,8 @@ io.on("connection", (socket) => {
 
           user.balance += winningsToAdd;
 
-          // 롤링 포인트 적립 (베팅액만큼)
-          user.rollingBalance = (user.rollingBalance || 0) + bet.amount;
+          // 롤링 포인트 적립 (베팅액만큼만)
+          user.rollingWagered = (user.rollingWagered || 0) + bet.amount;
 
           // 베팅 기록 추가
           user.bettingHistory.push({
@@ -1183,6 +1507,13 @@ io.on("connection", (socket) => {
       // 결과 전송
       io.emit("result_approved");
       io.emit("update_coins"); // 클라이언트가 잔액 업데이트 하도록 알림 (이름 변경 고려)
+
+      // 관리자에게 결과 승인 완료 알림
+      io.emit("admin_result_approved", {
+        message: "게임 결과가 성공적으로 승인되어 모든 정산이 완료되었습니다.",
+        gameResult: currentGameResult.result,
+        timestamp: new Date(),
+      });
 
       // 상태 초기화
       currentBets = [];
@@ -1216,7 +1547,7 @@ io.on("connection", (socket) => {
       // io.emit("my_bets_updated", { myCurrentBetsOnChoices: {} }); // 중복 제거
 
       res.json({
-        message: "게임 결과가 설정되고 사용자 코인이 업데이트되었습니다.",
+        message: "게임 결과가 설정되고 사용자 잔액이 업데이트되었습니다.",
       });
     } catch (err) {
       socket.emit("error", "게임 결과 승인 처리 중 오류가 발생했습니다.");
@@ -1260,6 +1591,15 @@ io.on("connection", (socket) => {
   socket.on("clear_cards_on_user_ui", () => {
     // console.log("[server.js] Received clear_cards_on_user_ui from game.html, emitting to user.html");
     io.emit("clear_cards_display_on_user_html"); // user.html의 카드 표시 클리어 이벤트
+  });
+
+  // 베팅 상태 요청 (페이지 새로고침 시 현재 상태 복원용)
+  socket.on("request_betting_status", () => {
+    socket.emit("betting_status", {
+      active: bettingActive,
+      endTime: bettingEndTime,
+      stats: currentBettingStats,
+    });
   });
 
   // 개인 베팅 금액 표시 초기화를 위한 my_bets_updated 이벤트 수신
@@ -1397,8 +1737,7 @@ const exchangeRequestSchema = new mongoose.Schema({
   requestAmount: Number, // 원 단위로 가정
   actualAmount: Number, // 원 단위로 가정
   fee: Number, // 원 단위로 가정
-  // totalBets: Number, // 총 베팅액 (원 단위) - 주석 처리 또는 삭제
-  // rollingPoint: Number, // 롤링 포인트 (원 단위) - 주석 처리 또는 삭제
+  rollingPoint: { type: Number, default: 0 },
   status: {
     type: String,
     enum: ["pending", "approved", "rejected"],
@@ -1408,10 +1747,6 @@ const exchangeRequestSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-  // usedAmount: { // 'usedBets'에서 'usedAmount'로 변경 - 주석 처리 또는 삭제
-  //   type: Number,
-  //   default: 0,
-  // },
 });
 
 const ExchangeRequest = mongoose.model(
@@ -1440,52 +1775,42 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       return res.status(400).json({ message: "보유 잔액이 부족합니다." });
     }
 
-    // 롤링 요구사항 체크 (사용 가능한 롤링 포인트가 신청 금액 이상이어야 함)
-    if ((user.rollingBalance || 0) < amount) {
+    // 환전 가능 금액 계산: 베팅한 금액만큼 환전 가능
+    const rollingWagered = user.rollingWagered || 0;
+    const maxExchangeAmount = Math.min(user.balance, rollingWagered);
+
+    if (amount > maxExchangeAmount) {
       return res.status(400).json({
-        message: `롤링 포인트가 부족합니다. 현재 사용 가능 롤링 포인트: ${(
-          user.rollingBalance || 0
-        ).toLocaleString()}원`,
-        rollingBalance: user.rollingBalance || 0,
+        message: `환전 가능 금액을 초과했습니다. 최대 환전 가능: ${maxExchangeAmount.toLocaleString()}원`,
       });
     }
 
-    // 새로운 수수료 계산
-    let fee = 0;
-    if (amount < 50000) {
-      fee = 1000;
-    } else if (amount < 200000) {
-      fee = 2000;
-    } else {
-      fee = Math.floor(amount * 0.01);
-    }
+    // 새로운 수수료 계산 (환전액의 10%)
+    const fee = Math.floor(amount * 0.1);
     const actualAmount = amount - fee;
 
-    // 환전 요청 생성
+    // 환전 요청 생성 (사용자 잔액/롤링은 관리자 승인 시 차감)
     const exchangeRequest = new ExchangeRequest({
       userId: user._id,
       username: user.username,
       requestAmount: amount,
       actualAmount: actualAmount,
       fee,
-      // totalBets, rollingPoint 필드는 ExchangeRequest 스키마에서 제거하거나 주석 처리 필요 (user.rollingBalance를 직접 사용하므로)
-      // status, createdAt 등은 스키마 기본값 사용
+      rollingPoint: user.rollingWagered || 0,
+    });
+    await exchangeRequest.save();
+
+    // 모든 관리자에게 새로운 환전 요청 알림
+    io.emit("new_exchange_request", {
+      username: user.username,
+      requestAmount: amount,
+      actualAmount: actualAmount,
+      fee,
+      createdAt: exchangeRequest.createdAt,
     });
 
-    // 사용자 잔액 차감
-    user.balance -= amount;
-    // 사용된 롤링 포인트 차감
-    user.rollingBalance = (user.rollingBalance || 0) - amount;
-
-    await Promise.all([exchangeRequest.save(), user.save()]);
-
     res.json({
-      message: "환전 신청이 완료되었습니다.",
-      requestAmount: amount,
-      actualAmount,
-      fee,
-      newBalance: user.balance,
-      newRollingBalance: user.rollingBalance,
+      message: "환전 신청이 완료되었습니다. 관리자 승인을 기다려주세요.",
     });
   } catch (err) {
     res.status(500).json({ message: "서버 에러" });
@@ -1500,6 +1825,175 @@ app.get("/api/exchange/history", auth(), async (req, res) => {
       .lean();
     res.json(exchanges);
   } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 사용자의 충전 내역 조회 API 추가
+app.get("/api/deposit/history", auth(), async (req, res) => {
+  try {
+    const deposits = await DepositRequest.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json(deposits);
+  } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 사용자 상세 정보 조회 API (개선된 내 정보용)
+app.get("/api/user/detailed-info", auth(), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password").lean();
+    if (!user) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+
+    // 베팅 통계 계산
+    const bettingHistory = user.bettingHistory || [];
+    const wins = bettingHistory.filter((bet) => bet.result === "win").length;
+    const losses = bettingHistory.filter((bet) => bet.result === "lose").length;
+    const totalGames = bettingHistory.length;
+    const winRate = totalGames > 0 ? ((wins / totalGames) * 100).toFixed(1) : 0;
+
+    // 베팅 손익 계산
+    let totalBetAmount = 0;
+    let totalWinAmount = 0;
+    let bettingProfit = 0;
+
+    console.log(
+      `사용자 ${user.username}의 베팅 기록 수:`,
+      bettingHistory.length
+    );
+
+    bettingHistory.forEach((bet) => {
+      totalBetAmount += bet.amount || 0;
+      if (bet.result === "win") {
+        const profit = calculateProfit(bet);
+        totalWinAmount += (bet.amount || 0) + profit;
+        bettingProfit += profit;
+      } else if (bet.result === "lose") {
+        bettingProfit -= bet.amount || 0;
+      }
+    });
+
+    console.log(`사용자 ${user.username}의 베팅 통계:`, {
+      totalBetAmount,
+      totalWinAmount,
+      bettingProfit,
+      bettingHistoryLength: bettingHistory.length,
+    });
+
+    // 충전 내역 조회
+    const deposits = await DepositRequest.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalDeposited = deposits
+      .filter((d) => d.status === "approved")
+      .reduce((sum, d) => sum + (d.amount || 0), 0);
+
+    // 환전 내역 조회
+    const exchanges = await ExchangeRequest.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalExchanged = exchanges
+      .filter((e) => e.status === "approved")
+      .reduce((sum, e) => sum + (e.actualAmount || 0), 0);
+
+    // 전체 손익 계산 (현재 잔액 + 총 환전액 - 총 충전액)
+    const overallProfit = user.balance + totalExchanged - totalDeposited;
+
+    // 롤링 정보
+    const rollingRequirement = (user.rollingDeposit || 0) * 1.5;
+    const rollingWagered = user.rollingWagered || 0;
+    const rollingProgress =
+      rollingRequirement > 0
+        ? Math.min(100, (rollingWagered / rollingRequirement) * 100)
+        : 100;
+
+    // 환전 가능 금액 계산: 베팅한 금액만큼 환전 가능
+    const maxExchangeAmount = Math.min(user.balance, rollingWagered);
+
+    // 최근 베팅 기록 (최근 20개)
+    const recentBets = bettingHistory.slice(-20).reverse();
+
+    // 베팅 선호도 분석
+    const choiceStats = {
+      player: bettingHistory.filter((bet) => bet.choice === "player").length,
+      banker: bettingHistory.filter((bet) => bet.choice === "banker").length,
+      tie: bettingHistory.filter((bet) => bet.choice === "tie").length,
+      player_pair: bettingHistory.filter((bet) => bet.choice === "player_pair")
+        .length,
+      banker_pair: bettingHistory.filter((bet) => bet.choice === "banker_pair")
+        .length,
+    };
+
+    const favoriteChoice = Object.entries(choiceStats).sort(
+      ([, a], [, b]) => b - a
+    )[0];
+
+    res.json({
+      // 기본 정보
+      username: user.username,
+      balance: user.balance,
+      createdAt: user.createdAt,
+      lastLogin: user.lastLogin,
+      isApproved: user.isApproved,
+      role: user.role,
+
+      // 게임 통계
+      gameStats: {
+        totalGames,
+        wins,
+        losses,
+        winRate: parseFloat(winRate),
+        favoriteChoice: favoriteChoice
+          ? {
+              choice: favoriteChoice[0],
+              count: favoriteChoice[1],
+            }
+          : null,
+      },
+
+      // 베팅 통계
+      bettingStats: {
+        totalBetAmount,
+        totalWinAmount,
+        bettingProfit,
+        averageBetAmount:
+          totalGames > 0 ? Math.round(totalBetAmount / totalGames) : 0,
+      },
+
+      // 재정 정보
+      financialInfo: {
+        totalDeposited,
+        totalExchanged,
+        overallProfit,
+        depositCount: deposits.filter((d) => d.status === "approved").length,
+        exchangeCount: exchanges.filter((e) => e.status === "approved").length,
+      },
+
+      // 롤링 정보
+      rollingInfo: {
+        rollingDeposit: user.rollingDeposit || 0,
+        rollingWagered: rollingWagered,
+        rollingRequirement,
+        rollingProgress: parseFloat(rollingProgress.toFixed(1)),
+        maxExchangeAmount,
+      },
+
+      // 최근 기록
+      recentBets,
+      recentDeposits: deposits.slice(0, 5),
+      recentExchanges: exchanges.slice(0, 5),
+
+      // 선호도 통계
+      choiceStats,
+    });
+  } catch (err) {
+    console.error("Error fetching detailed user info:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1530,15 +2024,57 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
       return res.status(400).json({ message: "이미 처리된 요청입니다." });
     }
 
+    const user = await User.findById(request.userId);
+    if (!user) {
+      // 사용자를 찾을 수 없으면 요청을 거절 처리
+      request.status = "rejected";
+      await request.save();
+      return res
+        .status(404)
+        .json({ message: "사용자를 찾을 수 없어 요청을 거절 처리합니다." });
+    }
+
+    if (status === "approved") {
+      if (user.balance < request.requestAmount) {
+        return res.status(400).json({
+          message: `사용자 잔액 부족. (현재 잔액: ${user.balance.toLocaleString()}원)`,
+        });
+      }
+
+      // 잔액 차감 및 롤링 정산
+      user.balance -= request.requestAmount;
+
+      // 환전한 금액만큼 롤링 베팅액에서 차감
+      user.rollingWagered = Math.max(
+        0,
+        (user.rollingWagered || 0) - request.requestAmount
+      );
+
+      await user.save();
+    }
+
+    // 'rejected'의 경우 사용자 잔액/롤링에 변경 없음
+
     request.status = status;
     await request.save();
 
-    // 거절된 경우 코인 반환
-    if (status === "rejected") {
-      const user = await User.findById(request.userId);
-      if (user) {
-        user.balance += request.requestAmount;
-        await user.save();
+    // 해당 유저에게 실시간 알림
+    const userSocket = userSockets.get(user._id.toString());
+    if (userSocket) {
+      if (status === "approved") {
+        userSocket.emit("balance_updated", { newBalance: user.balance });
+        userSocket.emit("exchange_request_processed", {
+          status: "approved",
+          requestAmount: request.requestAmount,
+          actualAmount: request.actualAmount,
+          newBalance: user.balance,
+        });
+      } else {
+        userSocket.emit("exchange_request_processed", {
+          status: "rejected",
+          requestAmount: request.requestAmount,
+          actualAmount: request.actualAmount,
+        });
       }
     }
 
@@ -1560,7 +2096,8 @@ app.get(
   async (req, res) => {
     try {
       const users = await User.find().select("-password").lean();
-      const depositsCollection = mongoose.connection.db.collection("deposits");
+      const depositsCollection =
+        mongoose.connection.db.collection("depositrequests");
       const exchangeRequestsCollection =
         mongoose.connection.db.collection("exchangerequests");
 
@@ -1617,6 +2154,637 @@ app.get(
     }
   }
 );
+
+// 충전 요청 스키마 추가
+const depositRequestSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  username: String,
+  amount: Number,
+  status: {
+    type: String,
+    enum: ["pending", "approved", "rejected"],
+    default: "pending",
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+const DepositRequest = mongoose.model("DepositRequest", depositRequestSchema);
+
+// 충전 신청 API
+app.post("/api/deposit/request", auth(), async (req, res) => {
+  const { amount } = req.body;
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+    if (amount < 10000) {
+      return res
+        .status(400)
+        .json({ message: "최소 10,000원부터 충전 가능합니다." });
+    }
+
+    const depositRequest = new DepositRequest({
+      userId: user._id,
+      username: user.username,
+      amount: amount,
+    });
+    await depositRequest.save();
+
+    // 모든 관리자에게 새로운 충전 요청 알림
+    io.emit("new_deposit_request", {
+      username: user.username,
+      amount: amount,
+      createdAt: depositRequest.createdAt,
+    });
+
+    res.json({
+      message: "충전 요청이 완료되었습니다. 관리자 승인을 기다려주세요.",
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 관리자용 충전 요청 목록 조회 API
+app.get("/api/admin/deposit-requests", auth("admin"), async (req, res) => {
+  try {
+    const requests = await DepositRequest.find().sort({ createdAt: -1 }).lean();
+    res.json(requests);
+  } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 관리자용 충전 요청 처리 API
+app.put("/api/admin/deposit-requests/:id", auth("admin"), async (req, res) => {
+  const { status } = req.body;
+  try {
+    const request = await DepositRequest.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ message: "요청을 찾을 수 없습니다." });
+    }
+    if (request.status !== "pending") {
+      return res.status(400).json({ message: "이미 처리된 요청입니다." });
+    }
+
+    const user = await User.findById(request.userId);
+    if (!user) {
+      // 사용자를 찾을 수 없으면 요청을 거절 처리
+      request.status = "rejected";
+      await request.save();
+      return res
+        .status(404)
+        .json({ message: "사용자를 찾을 수 없어 요청을 거절 처리합니다." });
+    }
+
+    request.status = status;
+    await request.save();
+
+    if (status === "approved") {
+      // 잔액 증가 및 롤링 포인트 추가
+      user.balance += request.amount;
+      user.rollingDeposit = (user.rollingDeposit || 0) + request.amount;
+      await user.save();
+
+      // 해당 유저에게 실시간 잔액 업데이트 및 충전 승인 알림
+      const userSocket = userSockets.get(user._id.toString());
+      if (userSocket) {
+        userSocket.emit("balance_updated", { newBalance: user.balance });
+        userSocket.emit("deposit_request_processed", {
+          status: "approved",
+          amount: request.amount,
+          newBalance: user.balance,
+        });
+      }
+
+      // 모든 관리자에게 사용자 잔액 업데이트 알림
+      io.emit("user_balance_updated", {
+        userId: user._id.toString(),
+        newBalance: user.balance,
+      });
+    } else {
+      // 거절된 경우에도 사용자에게 알림
+      const userSocket = userSockets.get(user._id.toString());
+      if (userSocket) {
+        userSocket.emit("deposit_request_processed", {
+          status: "rejected",
+          amount: request.amount,
+        });
+      }
+    }
+
+    res.json({
+      message: `충전 요청이 ${
+        status === "approved" ? "승인" : "거절"
+      }되었습니다.`,
+    });
+  } catch (err) {
+    console.error("Error processing deposit request:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// =====================
+// 뽀찌(머니 전송) 기능
+// =====================
+
+// 송금 스키마
+const transferSchema = new mongoose.Schema({
+  fromUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  toUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  amount: {
+    type: Number,
+    required: true,
+  },
+  fee: {
+    type: Number,
+    required: true,
+  },
+  type: {
+    type: String,
+    enum: ["sent", "received"],
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+const Transfer = mongoose.model("Transfer", transferSchema);
+
+// 머니 요청 스키마
+const moneyRequestSchema = new mongoose.Schema({
+  fromUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  toUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  amount: {
+    type: Number,
+    required: true,
+  },
+  message: {
+    type: String,
+    default: "",
+  },
+  status: {
+    type: String,
+    enum: ["pending", "accepted", "rejected"],
+    default: "pending",
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+const MoneyRequest = mongoose.model("MoneyRequest", moneyRequestSchema);
+
+// 사용자 목록 조회 API (자신 제외)
+app.get("/api/users/list", auth(), async (req, res) => {
+  try {
+    const users = await User.find({
+      _id: { $ne: req.user.id }, // 자신 제외
+      isApproved: true, // 승인된 사용자만
+    })
+      .select("username _id")
+      .sort({ username: 1 });
+
+    res.json(users);
+  } catch (err) {
+    console.error("사용자 목록 조회 에러:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 송금 API
+app.post("/api/transfer/send", auth(), async (req, res) => {
+  const { toUserId, amount } = req.body;
+
+  try {
+    if (!toUserId || !amount || amount < 1000) {
+      return res
+        .status(400)
+        .json({ message: "올바른 송금 정보를 입력해주세요. (최소 1,000원)" });
+    }
+
+    const fromUser = await User.findById(req.user.id);
+    const toUser = await User.findById(toUserId);
+
+    if (!fromUser || !toUser) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+
+    if (fromUser._id.toString() === toUser._id.toString()) {
+      return res
+        .status(400)
+        .json({ message: "자기 자신에게 송금할 수 없습니다." });
+    }
+
+    const fee = Math.floor(amount * 0.05); // 5% 수수료
+    const totalAmount = amount + fee;
+
+    if (fromUser.balance < totalAmount) {
+      return res.status(400).json({ message: "잔액이 부족합니다." });
+    }
+
+    // 송금 처리
+    fromUser.balance -= totalAmount;
+    toUser.balance += amount;
+
+    await fromUser.save();
+    await toUser.save();
+
+    // 송금 기록 생성 (보낸 사람)
+    const sentTransfer = new Transfer({
+      fromUserId: fromUser._id,
+      toUserId: toUser._id,
+      amount,
+      fee,
+      type: "sent",
+    });
+    await sentTransfer.save();
+
+    // 송금 기록 생성 (받은 사람) - 수수료 없음
+    const receivedTransfer = new Transfer({
+      fromUserId: fromUser._id,
+      toUserId: toUser._id,
+      amount,
+      fee: 0,
+      type: "received",
+    });
+    await receivedTransfer.save();
+
+    // 받는 사람에게 실시간 알림
+    const toUserSocket = userSockets.get(toUser._id.toString());
+    if (toUserSocket) {
+      toUserSocket.emit("money_received", {
+        fromUserId: fromUser._id.toString(),
+        fromUsername: fromUser.username,
+        amount,
+        timestamp: new Date(),
+      });
+      toUserSocket.emit("balance_updated", {
+        newBalance: toUser.balance,
+      });
+      // 송금 내역 새로고침 신호
+      toUserSocket.emit("transfer_history_updated");
+    }
+
+    // 보낸 사람에게도 송금 완료 알림
+    const fromUserSocket = userSockets.get(fromUser._id.toString());
+    if (fromUserSocket) {
+      fromUserSocket.emit("money_sent", {
+        toUserId: toUser._id.toString(),
+        toUsername: toUser.username,
+        amount,
+        fee,
+        timestamp: new Date(),
+      });
+      // 송금 내역 새로고침 신호
+      fromUserSocket.emit("transfer_history_updated");
+    }
+
+    res.json({
+      message: "송금이 완료되었습니다.",
+      newBalance: fromUser.balance,
+    });
+  } catch (err) {
+    console.error("송금 에러:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 머니 요청 API
+app.post("/api/transfer/request", auth(), async (req, res) => {
+  const { fromUserId, amount, message } = req.body;
+
+  try {
+    if (!fromUserId || !amount || amount < 1000) {
+      return res
+        .status(400)
+        .json({ message: "올바른 요청 정보를 입력해주세요. (최소 1,000원)" });
+    }
+
+    const toUser = await User.findById(req.user.id); // 요청하는 사람
+    const fromUser = await User.findById(fromUserId); // 요청받는 사람
+
+    if (!toUser || !fromUser) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+
+    if (toUser._id.toString() === fromUser._id.toString()) {
+      return res
+        .status(400)
+        .json({ message: "자기 자신에게 요청할 수 없습니다." });
+    }
+
+    // 머니 요청 생성
+    const moneyRequest = new MoneyRequest({
+      fromUserId: req.user.id, // 요청하는 사람
+      toUserId: fromUserId, // 요청받는 사람
+      amount,
+      message: message || "",
+    });
+    await moneyRequest.save();
+
+    // 요청받는 사람에게 실시간 알림
+    const fromUserSocket = userSockets.get(fromUser._id.toString());
+    if (fromUserSocket) {
+      fromUserSocket.emit("money_request_received", {
+        requestId: moneyRequest._id.toString(),
+        fromUserId: toUser._id.toString(),
+        fromUsername: toUser.username,
+        amount,
+        message: message || "",
+        timestamp: new Date(),
+      });
+      // 받은 요청 목록 새로고침 신호
+      fromUserSocket.emit("received_requests_updated");
+    }
+
+    // 요청한 사람에게도 요청 전송 완료 알림
+    const toUserSocket = userSockets.get(toUser._id.toString());
+    if (toUserSocket) {
+      toUserSocket.emit("money_request_sent", {
+        requestId: moneyRequest._id.toString(),
+        toUserId: fromUser._id.toString(),
+        toUsername: fromUser.username,
+        amount,
+        message: message || "",
+        timestamp: new Date(),
+      });
+    }
+
+    res.json({ message: "머니 요청이 전송되었습니다." });
+  } catch (err) {
+    console.error("머니 요청 에러:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 받은 요청 목록 조회 API
+app.get("/api/transfer/requests/received", auth(), async (req, res) => {
+  try {
+    const requests = await MoneyRequest.find({
+      toUserId: req.user.id,
+      status: "pending",
+    })
+      .populate("fromUserId", "username")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedRequests = requests.map((req) => ({
+      _id: req._id,
+      fromUser: {
+        _id: req.fromUserId._id,
+        username: req.fromUserId.username,
+      },
+      amount: req.amount,
+      message: req.message,
+      status: req.status,
+      createdAt: req.createdAt,
+    }));
+
+    res.json(formattedRequests);
+  } catch (err) {
+    console.error("받은 요청 조회 에러:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 요청 수락 API
+app.post(
+  "/api/transfer/request/:requestId/accept",
+  auth(),
+  async (req, res) => {
+    try {
+      const request = await MoneyRequest.findById(
+        req.params.requestId
+      ).populate("fromUserId", "username");
+
+      if (!request) {
+        return res.status(404).json({ message: "요청을 찾을 수 없습니다." });
+      }
+
+      if (request.toUserId.toString() !== req.user.id) {
+        return res.status(403).json({ message: "권한이 없습니다." });
+      }
+
+      if (request.status !== "pending") {
+        return res.status(400).json({ message: "이미 처리된 요청입니다." });
+      }
+
+      const fromUser = await User.findById(request.toUserId); // 송금하는 사람 (요청받은 사람)
+      const toUser = await User.findById(request.fromUserId); // 받는 사람 (요청한 사람)
+
+      if (!fromUser || !toUser) {
+        return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+      }
+
+      const fee = Math.floor(request.amount * 0.05); // 5% 수수료
+      const totalAmount = request.amount + fee;
+
+      if (fromUser.balance < totalAmount) {
+        return res.status(400).json({ message: "잔액이 부족합니다." });
+      }
+
+      // 송금 처리
+      fromUser.balance -= totalAmount;
+      toUser.balance += request.amount;
+
+      await fromUser.save();
+      await toUser.save();
+
+      // 요청 상태 업데이트
+      request.status = "accepted";
+      await request.save();
+
+      // 송금 기록 생성
+      const sentTransfer = new Transfer({
+        fromUserId: fromUser._id,
+        toUserId: toUser._id,
+        amount: request.amount,
+        fee,
+        type: "sent",
+      });
+      await sentTransfer.save();
+
+      const receivedTransfer = new Transfer({
+        fromUserId: fromUser._id,
+        toUserId: toUser._id,
+        amount: request.amount,
+        fee: 0,
+        type: "received",
+      });
+      await receivedTransfer.save();
+
+      // 요청한 사람에게 실시간 알림
+      const toUserSocket = userSockets.get(toUser._id.toString());
+      if (toUserSocket) {
+        toUserSocket.emit("money_request_accepted", {
+          requestId: request._id.toString(),
+          acceptedByUserId: fromUser._id.toString(),
+          acceptedByUsername: fromUser.username,
+          amount: request.amount,
+          timestamp: new Date(),
+        });
+        toUserSocket.emit("balance_updated", {
+          newBalance: toUser.balance,
+        });
+        // 송금 내역 새로고침 신호
+        toUserSocket.emit("transfer_history_updated");
+      }
+
+      // 수락한 사람에게도 알림
+      const fromUserSocket = userSockets.get(fromUser._id.toString());
+      if (fromUserSocket) {
+        fromUserSocket.emit("money_request_accept_completed", {
+          requestId: request._id.toString(),
+          toUserId: toUser._id.toString(),
+          toUsername: toUser.username,
+          amount: request.amount,
+          fee,
+          timestamp: new Date(),
+        });
+        // 송금 내역 및 받은 요청 목록 새로고침 신호
+        fromUserSocket.emit("transfer_history_updated");
+        fromUserSocket.emit("received_requests_updated");
+      }
+
+      res.json({
+        message: "요청을 수락했습니다.",
+        newBalance: fromUser.balance,
+      });
+    } catch (err) {
+      console.error("요청 수락 에러:", err);
+      res.status(500).json({ message: "서버 에러" });
+    }
+  }
+);
+
+// 요청 거절 API
+app.post(
+  "/api/transfer/request/:requestId/reject",
+  auth(),
+  async (req, res) => {
+    try {
+      const request = await MoneyRequest.findById(
+        req.params.requestId
+      ).populate("toUserId", "username");
+
+      if (!request) {
+        return res.status(404).json({ message: "요청을 찾을 수 없습니다." });
+      }
+
+      if (request.toUserId._id.toString() !== req.user.id) {
+        return res.status(403).json({ message: "권한이 없습니다." });
+      }
+
+      if (request.status !== "pending") {
+        return res.status(400).json({ message: "이미 처리된 요청입니다." });
+      }
+
+      // 요청 상태 업데이트
+      request.status = "rejected";
+      await request.save();
+
+      // 요청한 사람에게 실시간 알림
+      const fromUser = await User.findById(request.fromUserId);
+      const fromUserSocket = userSockets.get(request.fromUserId.toString());
+      if (fromUserSocket) {
+        fromUserSocket.emit("money_request_rejected", {
+          requestId: request._id.toString(),
+          rejectedByUserId: request.toUserId._id.toString(),
+          rejectedByUsername: request.toUserId.username,
+          amount: request.amount,
+          message: request.message,
+          timestamp: new Date(),
+        });
+      }
+
+      // 거절한 사람에게도 알림
+      const toUserSocket = userSockets.get(req.user.id);
+      if (toUserSocket) {
+        toUserSocket.emit("money_request_reject_completed", {
+          requestId: request._id.toString(),
+          fromUserId: request.fromUserId.toString(),
+          fromUsername: fromUser.username,
+          amount: request.amount,
+          timestamp: new Date(),
+        });
+        // 받은 요청 목록 새로고침 신호
+        toUserSocket.emit("received_requests_updated");
+      }
+
+      res.json({ message: "요청을 거절했습니다." });
+    } catch (err) {
+      console.error("요청 거절 에러:", err);
+      res.status(500).json({ message: "서버 에러" });
+    }
+  }
+);
+
+// 송금 내역 조회 API
+app.get("/api/transfer/history", auth(), async (req, res) => {
+  try {
+    const transfers = await Transfer.find({
+      $or: [{ fromUserId: req.user.id }, { toUserId: req.user.id }],
+    })
+      .populate("fromUserId", "username")
+      .populate("toUserId", "username")
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    const formattedTransfers = transfers.map((transfer) => {
+      const isSent = transfer.fromUserId._id.toString() === req.user.id;
+      return {
+        _id: transfer._id,
+        type: isSent ? "sent" : "received",
+        fromUser: {
+          _id: transfer.fromUserId._id,
+          username: transfer.fromUserId.username,
+        },
+        toUser: {
+          _id: transfer.toUserId._id,
+          username: transfer.toUserId.username,
+        },
+        amount: transfer.amount,
+        fee: isSent ? transfer.fee : 0,
+        createdAt: transfer.createdAt,
+      };
+    });
+
+    res.json(formattedTransfers);
+  } catch (err) {
+    console.error("송금 내역 조회 에러:", err);
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
 
 // =====================
 // 서버 시작
