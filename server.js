@@ -975,8 +975,6 @@ let currentBettingStats = {
 let currentGameResult = null;
 
 io.on("connection", (socket) => {
-  console.log("새 클라이언트 접속:", socket.id);
-
   // 접속 시 현재 베팅 상태 전송
   socket.emit("betting_status", {
     active: bettingActive,
@@ -1004,7 +1002,7 @@ io.on("connection", (socket) => {
 
         socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
       } catch (err) {
-        console.log("내 베팅 정보 요청 처리 실패:", err.message);
+        // 내 베팅 정보 요청 처리 실패
       }
     });
   }
@@ -1016,9 +1014,8 @@ io.on("connection", (socket) => {
       const userId = decoded.id;
       userSockets.set(userId, socket);
       socket.userId = userId;
-      console.log(`사용자 ${userId} 소켓 등록됨`);
     } catch (err) {
-      console.log("소켓 인증 실패:", err.message);
+      // 소켓 인증 실패
     }
   });
 
@@ -1026,9 +1023,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     if (socket.userId) {
       userSockets.delete(socket.userId);
-      console.log(`사용자 ${socket.userId} 소켓 제거됨`);
     }
-    console.log("클라이언트 연결 해제:", socket.id);
   });
 
   // 게임 상태 관리
@@ -1039,7 +1034,6 @@ io.on("connection", (socket) => {
 
   // 베팅 시작 이벤트 (관리자에 의해 호출됨)
   socket.on("start_betting", () => {
-    console.log("베팅 시작 요청 받음");
     const bettingDuration = 20; // 20초
     const endTime = new Date(Date.now() + bettingDuration * 1000);
 
@@ -1050,21 +1044,17 @@ io.on("connection", (socket) => {
     // 모든 클라이언트에게 베팅 시작과 종료 시간 알림
     io.emit("betting_started");
     io.emit("betting_end_time", endTime);
-    console.log("베팅 시작 알림 전송됨", { endTime });
 
     // 20초 후 베팅 종료
     setTimeout(() => {
       bettingActive = false;
       bettingEndTime = null;
       io.emit("betting_closed");
-      console.log("베팅 종료 알림 전송됨");
     }, bettingDuration * 1000);
   });
 
   // 관리자용 게임 시작 이벤트
   socket.on("admin_start_game", () => {
-    console.log("관리자 게임 시작 요청 받음");
-
     // 게임 실행
     const gameResult = baccaratGame.playGame();
 
@@ -1095,16 +1085,11 @@ io.on("connection", (socket) => {
         bankerPairOccurred: gameResult.bankerPairOccurred,
         timestamp: gameResult.timestamp,
       });
-
-      console.log("게임 결과 전송 완료:", gameResult);
     });
-
-    console.log("게임 결과 생성됨:", gameResult);
   });
 
   // 덱 셔플 이벤트
   socket.on("admin_shuffle_deck", () => {
-    console.log("관리자 덱 셔플 요청 받음");
     baccaratGame.initializeDeck();
     baccaratGame.shuffleDeck();
 
@@ -1113,8 +1098,6 @@ io.on("connection", (socket) => {
       message: "덱이 셔플되었습니다",
       deckInfo: baccaratGame.getDeckInfo(),
     });
-
-    console.log("덱 셔플 완료");
   });
 
   // 덱 정보 요청
@@ -1125,10 +1108,8 @@ io.on("connection", (socket) => {
   // 베팅 데이터 수신
   socket.on("place_bet", async (betData) => {
     const { choice, amount, token } = betData;
-    console.log("베팅 요청 받음:", { choice, amount });
 
     if (!bettingActive) {
-      console.log("베팅 비활성화 상태");
       return socket.emit("error", "현재 베팅이 진행 중이지 않습니다.");
     }
 
@@ -1215,10 +1196,6 @@ io.on("connection", (socket) => {
         return acc;
       }, {});
       socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
-
-      console.log(
-        `사용자 ${user.username}이(가) 베팅: ${choice}, 금액: ${amount}원`
-      );
     } catch (err) {
       socket.emit("error", "베팅 처리 중 오류가 발생했습니다.");
     }
@@ -1226,7 +1203,6 @@ io.on("connection", (socket) => {
 
   socket.on("cancel_bet", async (data) => {
     const { token } = data; // 토큰만 받아도 사용자 식별 가능
-    console.log("베팅 취소 요청 받음");
 
     if (!bettingActive) {
       return socket.emit("error", "베팅 시간이 종료되어 취소할 수 없습니다.");
@@ -1324,10 +1300,6 @@ io.on("connection", (socket) => {
       socket.emit("my_bets_updated", {
         myCurrentBetsOnChoices: myCurrentBetsOnChoicesAfterCancel,
       });
-
-      console.log(
-        `사용자 ${user.username}의 베팅 취소: ${betToCancel.choice}, 금액: ${betToCancel.amount}원`
-      );
     } catch (err) {
       socket.emit("error", "베팅 취소 처리 중 오류가 발생했습니다.");
     }
@@ -1355,9 +1327,6 @@ io.on("connection", (socket) => {
           throw new Error("승인할 게임 결과 데이터가 없습니다.");
         }
         // approvedGameData가 없을 경우, 기존의 currentGameResult를 사용 (페어 정보 X)
-        console.warn(
-          "approvedGameData가 제공되지 않아 기존 currentGameResult를 사용합니다."
-        );
       } else {
         // admin.html에서 보낸 상세 데이터로 currentGameResult를 설정하거나 업데이트
         // 이전에 socket.on("game_result", ...) 에서 설정된 stats, totalBets, playerCount 등을 유지하기 위해
@@ -1545,7 +1514,6 @@ io.on("connection", (socket) => {
 
   // game.html로부터 카드 정보를 받아 user.html로 전달하는 로직
   socket.on("card_dealt_to_user_ui", (data) => {
-    // console.log("[server.js] Received card_dealt_to_user_ui from game.html:", data);
     let displayValue = data.cardValue;
     if (["K", "Q", "J", "0"].includes(data.cardValue)) {
       displayValue = "0";
@@ -1563,12 +1531,11 @@ io.on("connection", (socket) => {
       cardIndex: data.cardIndex,
       isNewHand: data.isNewHand,
     };
-    // console.log("[server.js] Emitting display_card_on_user_html to user.html:", dataForUserHtml);
+
     io.emit("display_card_on_user_html", dataForUserHtml); // 모든 user.html 클라이언트에 브로드캐스트
   });
 
   socket.on("clear_cards_on_user_ui", () => {
-    // console.log("[server.js] Received clear_cards_on_user_ui from game.html, emitting to user.html");
     io.emit("clear_cards_display_on_user_html"); // user.html의 카드 표시 클리어 이벤트
   });
 
@@ -1840,10 +1807,7 @@ app.get("/api/user/detailed-info", auth(), async (req, res) => {
     let totalWinAmount = 0;
     let bettingProfit = 0;
 
-    console.log(
-      `사용자 ${user.username}의 베팅 기록 수:`,
-      bettingHistory.length
-    );
+    `사용자 ${user.username}의 베팅 기록 수:`, bettingHistory.length;
 
     bettingHistory.forEach((bet) => {
       totalBetAmount += bet.amount || 0;
@@ -1854,13 +1818,6 @@ app.get("/api/user/detailed-info", auth(), async (req, res) => {
       } else if (bet.result === "lose") {
         bettingProfit -= bet.amount || 0;
       }
-    });
-
-    console.log(`사용자 ${user.username}의 베팅 통계:`, {
-      totalBetAmount,
-      totalWinAmount,
-      bettingProfit,
-      bettingHistoryLength: bettingHistory.length,
     });
 
     // 충전 내역 조회
@@ -1972,7 +1929,6 @@ app.get("/api/user/detailed-info", auth(), async (req, res) => {
       choiceStats,
     });
   } catch (err) {
-    console.error("Error fetching detailed user info:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2063,7 +2019,6 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
       }되었습니다.`,
     });
   } catch (err) {
-    console.error("Error processing exchange request:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2128,7 +2083,6 @@ app.get(
 
       res.json(summaries);
     } catch (err) {
-      console.error("Error fetching users financial summary:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -2188,7 +2142,6 @@ app.post("/api/deposit/request", auth(), async (req, res) => {
       message: "충전 요청이 완료되었습니다. 관리자 승인을 기다려주세요.",
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2267,7 +2220,6 @@ app.put("/api/admin/deposit-requests/:id", auth("admin"), async (req, res) => {
       }되었습니다.`,
     });
   } catch (err) {
-    console.error("Error processing deposit request:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2354,7 +2306,6 @@ app.get("/api/users/list", auth(), async (req, res) => {
 
     res.json(users);
   } catch (err) {
-    console.error("사용자 목록 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2452,7 +2403,6 @@ app.post("/api/transfer/send", auth(), async (req, res) => {
       newBalance: fromUser.balance,
     });
   } catch (err) {
-    console.error("송금 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2520,7 +2470,6 @@ app.post("/api/transfer/request", auth(), async (req, res) => {
 
     res.json({ message: "머니 요청이 전송되었습니다." });
   } catch (err) {
-    console.error("머니 요청 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2550,7 +2499,6 @@ app.get("/api/transfer/requests/received", auth(), async (req, res) => {
 
     res.json(formattedRequests);
   } catch (err) {
-    console.error("받은 요청 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -2659,7 +2607,6 @@ app.post(
         newBalance: fromUser.balance,
       });
     } catch (err) {
-      console.error("요청 수락 에러:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -2721,7 +2668,6 @@ app.post(
 
       res.json({ message: "요청을 거절했습니다." });
     } catch (err) {
-      console.error("요청 거절 에러:", err);
       res.status(500).json({ message: "서버 에러" });
     }
   }
@@ -2760,7 +2706,6 @@ app.get("/api/transfer/history", auth(), async (req, res) => {
 
     res.json(formattedTransfers);
   } catch (err) {
-    console.error("송금 내역 조회 에러:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
