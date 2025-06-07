@@ -953,6 +953,23 @@ let bettingEndTime = null; // 베팅 종료 시간
 // 사용자별 소켓 관리
 const userSockets = new Map(); // <userId, socket>
 
+// 사용자 정보 캐시 (메모리 최적화)
+const userCache = new Map(); // <userId, userInfo>
+const CACHE_TTL = 5 * 60 * 1000; // 5분 캐시
+
+// 캐시 정리 함수
+const cleanUserCache = () => {
+  const now = Date.now();
+  for (const [userId, data] of userCache.entries()) {
+    if (data.cachedAt && now - data.cachedAt > CACHE_TTL) {
+      userCache.delete(userId);
+    }
+  }
+};
+
+// 5분마다 캐시 정리
+setInterval(cleanUserCache, CACHE_TTL);
+
 let currentBettingStats = {
   player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
   banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
@@ -1106,6 +1123,22 @@ io.on("connection", (socket) => {
   });
 
   // 베팅 데이터 수신
+  // 베팅 처리 큐와 디바운싱을 위한 변수
+  let bettingUpdateQueue = new Map();
+  let bettingUpdateTimer = null;
+
+  // 배치 업데이트 함수
+  const processBettingUpdates = () => {
+    if (bettingUpdateQueue.size > 0) {
+      // 모든 클라이언트에게 업데이트된 통계 전송
+      io.emit("new_bet", {
+        stats: currentBettingStats,
+        batchUpdate: true,
+      });
+      bettingUpdateQueue.clear();
+    }
+  };
+
   socket.on("place_bet", async (betData) => {
     const { choice, amount, token } = betData;
 
@@ -1120,10 +1153,24 @@ io.on("connection", (socket) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
-      const user = await User.findById(userId);
 
-      if (!user) {
-        return socket.emit("error", "사용자를 찾을 수 없습니다.");
+      // 메모리 캐시에서 사용자 정보 확인 (있으면)
+      let userData = userCache.get(userId);
+      let user;
+
+      if (
+        userData &&
+        userData.cachedAt &&
+        Date.now() - userData.cachedAt < CACHE_TTL
+      ) {
+        user = userData;
+      } else {
+        user = await User.findById(userId).lean();
+        if (!user) {
+          return socket.emit("error", "사용자를 찾을 수 없습니다.");
+        }
+        user.cachedAt = Date.now();
+        userCache.set(userId, user);
       }
 
       // 베팅 제한 확인
@@ -1147,10 +1194,23 @@ io.on("connection", (socket) => {
         return socket.emit("error", "잔액이 부족합니다.");
       }
 
-      // 즉시 잔액 차감
+      // 즉시 잔액 차감 (메모리에서)
       user.balance -= amount;
       user.rollingWagered = (user.rollingWagered || 0) + amount;
-      await user.save();
+      user.cachedAt = Date.now();
+      userCache.set(userId, user);
+
+      // DB 저장은 비동기로 처리 (await 제거)
+      User.findByIdAndUpdate(userId, {
+        $inc: {
+          balance: -amount,
+          rollingWagered: amount,
+        },
+      })
+        .exec()
+        .catch((err) => {
+          console.error("DB 업데이트 에러:", err);
+        });
 
       // 베팅 저장
       const bet = {
@@ -1161,34 +1221,28 @@ io.on("connection", (socket) => {
       };
 
       // 사용자가 해당 선택지에 이 베팅 이전에 다른 베팅을 했는지 확인
-      // currentBets에 현재 bet을 추가하기 전에 확인합니다.
       const previousBetsOnThisChoiceByThisUser = currentBets.find(
         (b) => b.userId === userId && b.choice === choice
       );
 
-      currentBets.push(bet); // 이제 현재 베팅을 추가
+      currentBets.push(bet);
 
+      // 통계 업데이트
       currentBettingStats[choice].count++;
       currentBettingStats[choice].total += amount;
 
       if (!previousBetsOnThisChoiceByThisUser) {
-        // 이 유저의 이 선택지에 대한 첫 베팅인 경우
         currentBettingStats[choice].bettor_count++;
       }
       currentBettingStats[choice].total_bet_amount += amount;
 
-      // 모든 클라이언트에게 새로운 베팅 정보 전송 (업데이트된 통계 포함)
-      io.emit("new_bet", {
-        choice,
-        stats: currentBettingStats, // 전체 통계 객체 전달
-      });
-
+      // 즉시 성공 응답 (사용자 경험 개선)
       socket.emit("bet_success", {
         message: "베팅이 완료되었습니다.",
         newBalance: user.balance,
       });
 
-      // 해당 유저의 선택지별 총 베팅액 계산
+      // 개인 베팅 정보 즉시 업데이트
       const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
         if (curBet.userId === userId) {
           acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
@@ -1196,6 +1250,18 @@ io.on("connection", (socket) => {
         return acc;
       }, {});
       socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
+
+      // 배치 업데이트 큐에 추가
+      bettingUpdateQueue.set(Date.now(), {
+        choice,
+        stats: currentBettingStats,
+      });
+
+      // 디바운싱: 100ms 후에 배치 업데이트
+      if (bettingUpdateTimer) {
+        clearTimeout(bettingUpdateTimer);
+      }
+      bettingUpdateTimer = setTimeout(processBettingUpdates, 100);
     } catch (err) {
       socket.emit("error", "베팅 처리 중 오류가 발생했습니다.");
     }
@@ -1483,6 +1549,9 @@ io.on("connection", (socket) => {
         },
       };
       currentGameResult = null;
+
+      // 게임 종료 시 사용자 캐시 초기화 (정확한 잔액 반영 위해)
+      userCache.clear();
 
       // 초기화된 통계를 포함하여 베팅 상태를 모든 클라이언트에 즉시 전송
       io.emit("betting_status", {
