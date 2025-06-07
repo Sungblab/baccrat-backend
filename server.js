@@ -12,8 +12,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret"; // 반드시 환
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://localhost:27017/betting_game";
 const FRONTEND_URL =
-  process.env.FRONTEND_URL ||
-  "https://golden-baccratt.netlify.app, http://127.0.0.1:5500";
+  process.env.FRONTEND_URL || "https://golden-baccratt.netlify.app";
 
 // Express 애플리케이션과 HTTP 서버 설정
 const app = express();
@@ -21,7 +20,7 @@ const server = http.createServer(app);
 
 // CORS 옵션 설정
 const corsOptions = {
-  origin: FRONTEND_URL,
+  origin: [FRONTEND_URL, "http://127.0.0.1:5500"],
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
