@@ -669,7 +669,7 @@ class BaccaratGame {
   }
 
   initializeDeck() {
-    const suits = ["hearts", "diamonds", "clubs", "spades"]; // 풀네임으로 변경
+    const suits = ["H", "D", "C", "S"]; // Hearts, Diamonds, Clubs, Spades
     const values = [
       "A",
       "2",
@@ -680,7 +680,7 @@ class BaccaratGame {
       "7",
       "8",
       "9",
-      "T", // 10을 T로 표현 (Ten)
+      "0", // 10을 0으로 표현 (deckofcardsapi.com 형식)
       "J",
       "Q",
       "K",
@@ -712,7 +712,7 @@ class BaccaratGame {
   }
 
   getCardValue(card) {
-    if (["J", "Q", "K", "T"].includes(card.value)) return 0; // T(10), J, Q, K는 0
+    if (["J", "Q", "K", "0"].includes(card.value)) return 0; // "T" 대신 "0" 사용
     if (card.value === "A") return 1;
     return parseInt(card.value);
   }
@@ -796,15 +796,16 @@ class BaccaratGame {
       return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
     }
 
-    // 플레이어 세 번째 카드 규칙
+    // 플레이어 세 번째 카드 (5 이하일 때 받음)
     let playerThirdCard = null;
     if (playerScore.total <= 5) {
       playerThirdCard = this.drawCard();
       playerHand.push(playerThirdCard);
     }
 
-    // 뱅커 세 번째 카드 규칙
-    if (this.shouldBankerDraw(bankerScore.total, playerThirdCard)) {
+    // 뱅커 세 번째 카드 (수정된 바카라 규칙 적용)
+    const currentBankerScore = this.calculateHandValue(bankerHand);
+    if (this.shouldBankerDraw(currentBankerScore.total, playerThirdCard)) {
       bankerHand.push(this.drawCard());
     }
 
@@ -1067,8 +1068,13 @@ io.on("connection", (socket) => {
     // 게임 실행
     const gameResult = baccaratGame.playGame();
 
-    // 현재 게임 결과 저장
-    currentGameResult = gameResult;
+    // 현재 게임 결과 저장 (베팅 통계 포함)
+    currentGameResult = {
+      ...gameResult,
+      stats: currentBettingStats,
+      totalBets: currentBets.reduce((sum, bet) => sum + bet.amount, 0),
+      playerCount: new Set(currentBets.map((bet) => bet.userId)).size,
+    };
 
     // 카드 정보를 user.html로 전송하고, 완료 후 게임 결과 전송
     sendCardsToUserHtml(gameResult, () => {
@@ -1080,7 +1086,7 @@ io.on("connection", (socket) => {
         deckInfo: baccaratGame.getDeckInfo(),
       });
 
-      // admin.html용 게임 결과 이벤트 (페어 정보 포함)
+      // 관리자에게만 game_result 이벤트 전송 (승인/거절 처리용)
       io.emit("game_result", {
         result: gameResult.result,
         playerScore: gameResult.playerScore,
@@ -1327,34 +1333,8 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 게임 결과 처리 이벤트 핸들러 수정
-  socket.on("game_result", async (data) => {
-    const {
-      result,
-      playerScore,
-      bankerScore,
-      timestamp,
-      playerPairOccurred,
-      bankerPairOccurred,
-    } = data; // 페어 정보 직접 수신
-
-    // 현재 게임 결과 저장 (페어 정보 포함)
-    currentGameResult = {
-      result,
-      playerScore,
-      bankerScore,
-      timestamp: timestamp || new Date().toISOString(),
-      playerPairOccurred: playerPairOccurred || false,
-      bankerPairOccurred: bankerPairOccurred || false,
-      stats: currentBettingStats,
-      totalBets: currentBets.reduce((sum, bet) => sum + bet.amount, 0),
-      playerCount: new Set(currentBets.map((bet) => bet.userId)).size,
-    };
-
-    // 관리자에게 결과 전달 (페어 정보 포함)
-    io.emit("game_result", currentGameResult);
-    console.log("게임 결과 수신 (페어 포함):", currentGameResult);
-  });
+  // 이 부분은 이제 admin_start_game에서 직접 처리하므로 제거합니다.
+  // 중복된 game_result 이벤트 핸들러를 제거하여 결과 중복 발생을 방지합니다.
 
   let resultProcessing = false; // 결과 처리 중복 방지 플래그는 유지
 
@@ -1444,7 +1424,7 @@ io.on("connection", (socket) => {
           if (["player", "banker", "tie"].includes(bet.choice)) {
             if (currentGameResult.result === "tie") {
               if (bet.choice === "tie") {
-                winningsToAdd = bet.amount * 5; // 타이 당첨 (5배)
+                winningsToAdd = bet.amount * 8; // 타이 당첨 (9배)
                 outcome = "win";
               } else {
                 winningsToAdd = bet.amount; // P/B 베팅 후 타이 시 원금 반환
