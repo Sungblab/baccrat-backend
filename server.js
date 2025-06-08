@@ -185,11 +185,14 @@ app.get("/api/auth/user-info", auth(), async (req, res) => {
       return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
     }
 
-    // 환전 가능 금액 계산: 베팅한 금액만큼 환전 가능
-    const rollingRequirement = (user.rollingDeposit || 0) * 1.5;
+    // 환전 가능 금액 계산: 롤링 요구량 달성 시에만 환전 가능
+    const rollingDeposit = user.rollingDeposit || 0;
     const rollingWagered = user.rollingWagered || 0;
-    // 베팅한 금액만큼은 언제든지 환전 가능
-    const maxExchangeAmount = Math.min(user.balance, rollingWagered);
+    const rollingRequirement = rollingDeposit * 1.5;
+
+    // 롤링 요구량을 달성한 경우에만 환전 가능
+    const maxExchangeAmount =
+      rollingWagered >= rollingRequirement ? user.balance : 0;
 
     res.json({
       username: user.username,
@@ -256,6 +259,152 @@ app.get("/api/admin/users-stats", auth("admin"), async (req, res) => {
 
     res.json(stats);
   } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 관리자용 사용자 상세 정보 조회 API
+app.get("/api/admin/user-detail/:userId", auth("admin"), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select("-password")
+      .lean();
+    if (!user) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+
+    // 베팅 통계 계산
+    const bettingHistory = user.bettingHistory || [];
+    const wins = bettingHistory.filter((bet) => bet.result === "win").length;
+    const losses = bettingHistory.filter((bet) => bet.result === "lose").length;
+    const totalGames = bettingHistory.length;
+    const winRate = totalGames > 0 ? ((wins / totalGames) * 100).toFixed(1) : 0;
+
+    // 베팅 손익 계산
+    let totalBetAmount = 0;
+    let totalWinAmount = 0;
+    let bettingProfit = 0;
+
+    bettingHistory.forEach((bet) => {
+      totalBetAmount += bet.amount || 0;
+      if (bet.result === "win") {
+        const profit = calculateProfit(bet);
+        totalWinAmount += (bet.amount || 0) + profit;
+        bettingProfit += profit;
+      } else if (bet.result === "lose") {
+        bettingProfit -= bet.amount || 0;
+      }
+    });
+
+    // 충전 내역 조회
+    const deposits = await DepositRequest.find({ userId: req.params.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalDeposited = deposits
+      .filter((d) => d.status === "approved")
+      .reduce((sum, d) => sum + (d.amount || 0), 0);
+
+    // 환전 내역 조회
+    const exchanges = await ExchangeRequest.find({ userId: req.params.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const totalExchanged = exchanges
+      .filter((e) => e.status === "approved")
+      .reduce((sum, e) => sum + (e.actualAmount || 0), 0);
+
+    // 전체 손익 계산 (현재 잔액 + 총 환전액 - 총 충전액)
+    const overallProfit = user.balance + totalExchanged - totalDeposited;
+
+    // 롤링 정보 (실제 서버 데이터)
+    const rollingDeposit = user.rollingDeposit || 0;
+    const rollingWagered = user.rollingWagered || 0;
+    const rollingRequirement = rollingDeposit * 1.5;
+    const rollingProgress =
+      rollingRequirement > 0
+        ? Math.min(100, (rollingWagered / rollingRequirement) * 100)
+        : 100;
+
+    // 베팅 선호도 분석
+    const choiceStats = {
+      player: bettingHistory.filter((bet) => bet.choice === "player").length,
+      banker: bettingHistory.filter((bet) => bet.choice === "banker").length,
+      tie: bettingHistory.filter((bet) => bet.choice === "tie").length,
+      player_pair: bettingHistory.filter((bet) => bet.choice === "player_pair")
+        .length,
+      banker_pair: bettingHistory.filter((bet) => bet.choice === "banker_pair")
+        .length,
+    };
+
+    const favoriteChoice = Object.entries(choiceStats).sort(
+      ([, a], [, b]) => b - a
+    )[0];
+
+    res.json({
+      // 기본 정보
+      _id: user._id,
+      username: user.username,
+      balance: user.balance,
+      role: user.role,
+      isApproved: user.isApproved,
+      createdAt: user.createdAt,
+
+      // 게임 통계
+      wins,
+      losses,
+      totalGames,
+      winRate: parseFloat(winRate),
+      favoriteChoice: favoriteChoice
+        ? {
+            choice: favoriteChoice[0],
+            count: favoriteChoice[1],
+          }
+        : null,
+
+      // 베팅 통계 (실제 베팅액 100%)
+      totalBetAmount,
+      totalWinAmount,
+      bettingProfit,
+      averageBetAmount:
+        totalGames > 0 ? Math.round(totalBetAmount / totalGames) : 0,
+
+      // 재정 정보
+      totalDeposited,
+      totalExchanged,
+      overallProfit,
+      depositCount: deposits.filter((d) => d.status === "approved").length,
+      exchangeCount: exchanges.filter((e) => e.status === "approved").length,
+
+      // 롤링 정보 (실제 서버 데이터)
+      rollingDeposit,
+      rollingWagered,
+      rollingRequirement,
+      rollingProgress: parseFloat(rollingProgress.toFixed(1)),
+
+      // 베팅 선호도
+      choiceStats,
+
+      // 최근 거래 내역
+      recentTransactions: [
+        ...deposits.slice(0, 5).map((d) => ({
+          type: "deposit",
+          amount: d.amount,
+          status: d.status,
+          createdAt: d.createdAt,
+        })),
+        ...exchanges.slice(0, 5).map((e) => ({
+          type: "exchange",
+          amount: e.actualAmount || e.requestAmount,
+          status: e.status,
+          createdAt: e.createdAt,
+        })),
+      ]
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 10),
+    });
+  } catch (err) {
+    console.error("Error fetching user detail:", err);
     res.status(500).json({ message: "서버 에러" });
   }
 });
@@ -1844,9 +1993,14 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       return res.status(400).json({ message: "보유 잔액이 부족합니다." });
     }
 
-    // 환전 가능 금액 계산: 베팅한 금액만큼 환전 가능
+    // 환전 가능 금액 계산: 롤링 요구량 달성 시에만 환전 가능
+    const rollingDeposit = user.rollingDeposit || 0;
     const rollingWagered = user.rollingWagered || 0;
-    const maxExchangeAmount = Math.min(user.balance, rollingWagered);
+    const rollingRequirement = rollingDeposit * 1.5;
+
+    // 롤링 요구량을 달성한 경우에만 환전 가능
+    const maxExchangeAmount =
+      rollingWagered >= rollingRequirement ? user.balance : 0;
 
     if (amount > maxExchangeAmount) {
       return res.status(400).json({
@@ -2099,14 +2253,11 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
         });
       }
 
-      // 잔액 차감 및 롤링 정산
+      // 잔액 차감 (롤링은 유지)
       user.balance -= request.requestAmount;
 
-      // 환전한 금액만큼 롤링 베팅액에서 차감
-      user.rollingWagered = Math.max(
-        0,
-        (user.rollingWagered || 0) - request.requestAmount
-      );
+      // 환전 후에도 롤링 상태는 유지 (차감하지 않음)
+      // user.rollingWagered는 그대로 유지
 
       await user.save();
     }
@@ -2317,9 +2468,13 @@ app.put("/api/admin/deposit-requests/:id", auth("admin"), async (req, res) => {
     await request.save();
 
     if (status === "approved") {
-      // 잔액 증가 및 롤링 포인트 추가
+      // 잔액 증가 및 롤링 초기화
       user.balance += request.amount;
-      user.rollingDeposit = (user.rollingDeposit || 0) + request.amount;
+
+      // 새로 충전할 때마다 롤링 초기화 및 새로운 롤링 설정
+      user.rollingDeposit = request.amount; // 새 충전액으로 초기화
+      user.rollingWagered = 0; // 베팅액 초기화
+
       await user.save();
 
       // 해당 유저에게 실시간 잔액 업데이트 및 충전 승인 알림
