@@ -702,66 +702,116 @@ class BaccaratGame {
     const playerHand = [];
     const bankerHand = [];
 
+    // 패턴 번호 추출 (예: "player_1", "banker_2", "tie_3")
+    const [result, patternNum] = fixedResult.split("_");
+    const pattern = parseInt(patternNum) || 1;
+
     // 원하는 결과에 따라 미리 계산된 카드 조합 사용
-    if (fixedResult === "player") {
-      // 플레이어 승리: 플레이어 9, 뱅커 8
-      playerHand.push({ suit: "H", value: "9", id: "9H_fixed" });
-      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
-      bankerHand.push({ suit: "C", value: "8", id: "8C_fixed" });
-      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
-    } else if (fixedResult === "banker") {
-      // 뱅커 승리: 뱅커 9, 플레이어 8
-      playerHand.push({ suit: "H", value: "8", id: "8H_fixed" });
-      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
-      bankerHand.push({ suit: "C", value: "9", id: "9C_fixed" });
-      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
-    } else if (fixedResult === "tie") {
-      // 타이: 둘 다 8
-      playerHand.push({ suit: "H", value: "8", id: "8H_fixed" });
-      playerHand.push({ suit: "D", value: "0", id: "0D_fixed" });
-      bankerHand.push({ suit: "C", value: "8", id: "8C_fixed" });
-      bankerHand.push({ suit: "S", value: "0", id: "0S_fixed" });
-    }
-
-    // 만약 원하는 결과가 나오지 않으면 추가 카드로 조정
-    let playerScore = this.calculateHandValue(playerHand);
-    let bankerScore = this.calculateHandValue(bankerHand);
-
-    // 결과 확인 및 필요시 추가 조정
-    let currentResult;
-    if (playerScore.total > bankerScore.total) {
-      currentResult = "player";
-    } else if (playerScore.total < bankerScore.total) {
-      currentResult = "banker";
-    } else {
-      currentResult = "tie";
-    }
-
-    // 원하는 결과와 다르면 강제로 조정
-    if (currentResult !== fixedResult) {
-      if (fixedResult === "player" && currentResult !== "player") {
-        // 플레이어가 이기도록 강제 조정
-        playerHand[0] = { suit: "H", value: "9", id: "9H_forced" };
-        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
-        bankerHand[0] = { suit: "C", value: "7", id: "7C_forced" };
-        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
-      } else if (fixedResult === "banker" && currentResult !== "banker") {
-        // 뱅커가 이기도록 강제 조정
-        playerHand[0] = { suit: "H", value: "7", id: "7H_forced" };
-        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
-        bankerHand[0] = { suit: "C", value: "9", id: "9C_forced" };
-        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
-      } else if (fixedResult === "tie" && currentResult !== "tie") {
-        // 타이가 되도록 강제 조정
-        playerHand[0] = { suit: "H", value: "8", id: "8H_forced" };
-        playerHand[1] = { suit: "D", value: "0", id: "0D_forced" };
-        bankerHand[0] = { suit: "C", value: "8", id: "8C_forced" };
-        bankerHand[1] = { suit: "S", value: "0", id: "0S_forced" };
-      }
+    if (result === "player") {
+      this.setPlayerWinPattern(playerHand, bankerHand, pattern);
+    } else if (result === "banker") {
+      this.setBankerWinPattern(playerHand, bankerHand, pattern);
+    } else if (result === "tie") {
+      this.setTiePattern(playerHand, bankerHand, pattern);
     }
 
     const { playerPair, bankerPair } = this.checkPairs(playerHand, bankerHand);
     return this.getGameResult(playerHand, bankerHand, playerPair, bankerPair);
+  }
+
+  // 플레이어 승리 패턴들
+  setPlayerWinPattern(playerHand, bankerHand, pattern) {
+    switch (pattern) {
+      case 1: // 내추럴 9 vs 8
+        playerHand.push({ suit: "H", value: "9", id: "9H_p1" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_p1" });
+        bankerHand.push({ suit: "C", value: "8", id: "8C_p1" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_p1" });
+        break;
+      case 2: // 세 번째 카드로 역전승
+        playerHand.push({ suit: "H", value: "4", id: "4H_p2" });
+        playerHand.push({ suit: "D", value: "2", id: "2D_p2" });
+        playerHand.push({ suit: "S", value: "3", id: "3S_p2" }); // 6+3=9
+        bankerHand.push({ suit: "C", value: "5", id: "5C_p2" });
+        bankerHand.push({ suit: "H", value: "2", id: "2H_p2" }); // 7로 스탠드
+        break;
+      case 3: // 간발의 차이로 승리
+        playerHand.push({ suit: "H", value: "6", id: "6H_p3" });
+        playerHand.push({ suit: "D", value: "2", id: "2D_p3" }); // 8
+        bankerHand.push({ suit: "C", value: "4", id: "4C_p3" });
+        bankerHand.push({ suit: "S", value: "3", id: "3S_p3" }); // 7
+        break;
+      default:
+        // 기본 패턴
+        playerHand.push({ suit: "H", value: "9", id: "9H_default" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_default" });
+        bankerHand.push({ suit: "C", value: "8", id: "8C_default" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_default" });
+    }
+  }
+
+  // 뱅커 승리 패턴들
+  setBankerWinPattern(playerHand, bankerHand, pattern) {
+    switch (pattern) {
+      case 1: // 내추럴 9 vs 8
+        playerHand.push({ suit: "H", value: "8", id: "8H_b1" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_b1" });
+        bankerHand.push({ suit: "C", value: "9", id: "9C_b1" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_b1" });
+        break;
+      case 2: // 뱅커 룰에 의한 승리
+        playerHand.push({ suit: "H", value: "3", id: "3H_b2" });
+        playerHand.push({ suit: "D", value: "2", id: "2D_b2" });
+        playerHand.push({ suit: "S", value: "4", id: "4S_b2" }); // 5+4=9
+        bankerHand.push({ suit: "C", value: "6", id: "6C_b2" });
+        bankerHand.push({ suit: "H", value: "3", id: "3H_b2" });
+        bankerHand.push({ suit: "D", value: "A", id: "AD_b2" }); // 9+1=0 (10)
+        break;
+      case 3: // 압도적 승리
+        playerHand.push({ suit: "H", value: "2", id: "2H_b3" });
+        playerHand.push({ suit: "D", value: "3", id: "3D_b3" }); // 5
+        bankerHand.push({ suit: "C", value: "7", id: "7C_b3" });
+        bankerHand.push({ suit: "S", value: "2", id: "2S_b3" }); // 9
+        break;
+      default:
+        // 기본 패턴
+        playerHand.push({ suit: "H", value: "7", id: "7H_default" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_default" });
+        bankerHand.push({ suit: "C", value: "9", id: "9C_default" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_default" });
+    }
+  }
+
+  // 타이 패턴들
+  setTiePattern(playerHand, bankerHand, pattern) {
+    switch (pattern) {
+      case 1: // 내추럴 8 타이
+        playerHand.push({ suit: "H", value: "8", id: "8H_t1" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_t1" });
+        bankerHand.push({ suit: "C", value: "8", id: "8C_t1" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_t1" });
+        break;
+      case 2: // 세 번째 카드 후 타이
+        playerHand.push({ suit: "H", value: "2", id: "2H_t2" });
+        playerHand.push({ suit: "D", value: "4", id: "4D_t2" });
+        playerHand.push({ suit: "S", value: "A", id: "AS_t2" }); // 6+1=7
+        bankerHand.push({ suit: "C", value: "5", id: "5C_t2" });
+        bankerHand.push({ suit: "H", value: "A", id: "AH_t2" });
+        bankerHand.push({ suit: "D", value: "A", id: "AD_t2" }); // 6+1=7
+        break;
+      case 3: // 낮은 점수 타이
+        playerHand.push({ suit: "H", value: "3", id: "3H_t3" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_t3" }); // 3
+        bankerHand.push({ suit: "C", value: "2", id: "2C_t3" });
+        bankerHand.push({ suit: "S", value: "A", id: "AS_t3" }); // 3
+        break;
+      default:
+        // 기본 패턴
+        playerHand.push({ suit: "H", value: "8", id: "8H_default" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_default" });
+        bankerHand.push({ suit: "C", value: "8", id: "8C_default" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_default" });
+    }
   }
 }
 
@@ -1273,7 +1323,7 @@ io.on("connection", (socket) => {
 
   // 승부 조작 이벤트 (관리자 전용)
   socket.on("admin_fix_result", (data) => {
-    const { result } = data;
+    const { result, pattern } = data;
 
     // 베팅이 활성화되어 있을 때만 조작 가능
     if (!bettingActive) {
@@ -1281,19 +1331,47 @@ io.on("connection", (socket) => {
     }
 
     // 유효한 결과인지 확인
-    if (!["player", "banker", "tie"].includes(result)) {
+    const validResults = ["player", "banker", "tie"];
+    const baseResult = result.split("_")[0];
+    if (!validResults.includes(baseResult)) {
       return socket.emit("error", "유효하지 않은 결과입니다.");
     }
 
+    // 패턴이 지정되지 않았으면 기본 패턴 사용
+    const patternNum = pattern || 1;
+    const fixedResultWithPattern = `${baseResult}_${patternNum}`;
+
     // 조작된 결과 설정
-    fixedGameResult = result;
+    fixedGameResult = fixedResultWithPattern;
+
+    // 패턴 설명 생성
+    const patternDescriptions = {
+      player_1: "내추럴 9 vs 8",
+      player_2: "세 번째 카드로 역전승",
+      player_3: "간발의 차이로 승리",
+      banker_1: "내추럴 9 vs 8",
+      banker_2: "뱅커 룰에 의한 승리",
+      banker_3: "압도적 승리",
+      tie_1: "내추럴 8 타이",
+      tie_2: "세 번째 카드 후 타이",
+      tie_3: "낮은 점수 타이",
+    };
+
+    const resultName =
+      baseResult === "player"
+        ? "플레이어"
+        : baseResult === "banker"
+        ? "뱅커"
+        : "타이";
+    const patternDesc =
+      patternDescriptions[fixedResultWithPattern] || "기본 패턴";
 
     // 관리자에게 확인 메시지 전송
     socket.emit("result_fixed", {
-      message: `다음 게임 결과가 ${
-        result === "player" ? "플레이어" : result === "banker" ? "뱅커" : "타이"
-      }로 설정되었습니다.`,
-      fixedResult: result,
+      message: `다음 게임 결과가 ${resultName} 승리로 설정되었습니다.\n패턴: ${patternDesc}`,
+      fixedResult: fixedResultWithPattern,
+      pattern: patternNum,
+      patternDescription: patternDesc,
     });
   });
 
