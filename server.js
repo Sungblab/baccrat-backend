@@ -11,8 +11,7 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret"; // 반드시 환경 변수로 관리하세요
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://localhost:27017/betting_game";
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || "https://golden-baccratt.netlify.app";
+const FRONTEND_URL = process.env.FRONTEND_URL || "goldbac.netlify.app";
 
 // Express 애플리케이션과 HTTP 서버 설정
 const app = express();
@@ -169,7 +168,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const payload = { id: user._id, role: user.role };
-    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" }); // 30일로 연장
 
     res.json({ token });
   } catch (err) {
@@ -1112,6 +1111,296 @@ let currentBettingStats = {
 
 // 현재 게임 결과를 저장할 변수 추가
 let currentGameResult = null;
+let resultProcessing = false;
+
+// 백그라운드 자동 게임 상태
+let backgroundGameState = {
+  isActive: false,
+  gameCount: 0,
+  maxGames: 0,
+  gameTimer: null,
+  bettingTimer: null,
+  adminSocketId: null, // 백그라운드 시작한 admin 소켓 ID
+};
+
+// 백그라운드 베팅 시작 함수
+function startBackgroundBetting() {
+  if (!backgroundGameState.isActive) return;
+
+  const bettingDuration = 20; // 20초
+  const endTime = new Date(Date.now() + bettingDuration * 1000);
+
+  // 베팅 활성화
+  bettingActive = true;
+  bettingEndTime = endTime;
+
+  // 모든 클라이언트에게 베팅 시작과 종료 시간 알림
+  io.emit("betting_started");
+  io.emit("betting_end_time", endTime);
+
+  // 20초 후 베팅 종료 및 게임 시작
+  backgroundGameState.bettingTimer = setTimeout(() => {
+    if (!bettingActive || !backgroundGameState.isActive) return;
+
+    bettingActive = false;
+    bettingEndTime = null;
+    io.emit("betting_closed");
+
+    // 바로 게임 시작
+    setTimeout(() => {
+      if (backgroundGameState.isActive) {
+        startBackgroundGame();
+      }
+    }, 2000); // 2초 후 게임 시작
+  }, bettingDuration * 1000);
+}
+
+// 백그라운드 게임 시작 함수
+function startBackgroundGame() {
+  if (!backgroundGameState.isActive) return;
+
+  // 게임 실행
+  const gameResult = baccaratGame.playGame();
+
+  // 현재 게임 결과 저장 (베팅 통계 포함)
+  const processedGameResult = {
+    ...gameResult,
+    stats: currentBettingStats,
+    totalBets: currentBets.reduce((sum, bet) => sum + bet.amount, 0),
+    playerCount: new Set(currentBets.map((bet) => bet.userId)).size,
+  };
+
+  // 카드 정보를 user.html로 전송하고, 완료 후 게임 결과 처리
+  sendCardsToUserHtml(gameResult, async () => {
+    // 모든 클라이언트에게 게임 결과 전송
+    io.emit("game_result", {
+      result: gameResult.result,
+      playerScore: gameResult.playerScore,
+      bankerScore: gameResult.bankerScore,
+      playerPairOccurred: gameResult.playerPairOccurred,
+      bankerPairOccurred: gameResult.bankerPairOccurred,
+      timestamp: gameResult.timestamp,
+    });
+
+    // 관리자에게도 카드 정보와 함께 결과 전송
+    io.emit("game_result_with_cards", {
+      ...gameResult,
+      deckInfo: baccaratGame.getDeckInfo(),
+    });
+
+    // 5초 후 결과 처리
+    setTimeout(async () => {
+      await processBackgroundGameResult(processedGameResult);
+
+      // 게임 카운트 증가
+      backgroundGameState.gameCount++;
+
+      // 백그라운드 상태 업데이트를 admin에게 전송
+      if (backgroundGameState.adminSocketId) {
+        const adminSocket = [...io.sockets.sockets.values()].find(
+          (s) => s.id === backgroundGameState.adminSocketId
+        );
+        if (adminSocket) {
+          adminSocket.emit("background_game_status", {
+            isActive: backgroundGameState.isActive,
+            gameCount: backgroundGameState.gameCount,
+            maxGames: backgroundGameState.maxGames,
+          });
+        }
+      }
+
+      // 최대 게임 수 체크
+      if (backgroundGameState.gameCount >= backgroundGameState.maxGames) {
+        stopBackgroundGame();
+        console.log();
+        return;
+      }
+
+      // 다음 게임 스케줄 (4초 후)
+      if (backgroundGameState.isActive) {
+        backgroundGameState.gameTimer = setTimeout(() => {
+          if (backgroundGameState.isActive) {
+            startBackgroundBetting();
+          }
+        }, 4000);
+      }
+    }, 5000);
+  });
+}
+
+// 백그라운드 게임 결과 처리 함수
+async function processBackgroundGameResult(processedGameResult) {
+  if (resultProcessing) return;
+  resultProcessing = true;
+
+  try {
+    // 게임 결과 DB 저장
+    const game = new Game({
+      result: processedGameResult.result,
+      playerPairOccurred: processedGameResult.playerPairOccurred || false,
+      bankerPairOccurred: processedGameResult.bankerPairOccurred || false,
+      stats: processedGameResult.stats,
+      totalBets: processedGameResult.totalBets,
+      playerCount: processedGameResult.playerCount,
+      date: new Date(processedGameResult.timestamp),
+    });
+    await game.save();
+
+    // 베팅이 있는 경우에만 정산 처리
+    if (currentBets.length > 0) {
+      // 사용자별 총 베팅 금액 계산
+      const userTotalBets = {};
+      currentBets.forEach((bet) => {
+        if (!userTotalBets[bet.userId]) {
+          userTotalBets[bet.userId] = {};
+        }
+        if (!userTotalBets[bet.userId][bet.choice]) {
+          userTotalBets[bet.userId][bet.choice] = 0;
+        }
+        userTotalBets[bet.userId][bet.choice] += bet.amount;
+      });
+
+      // 베팅 정산
+      for (const bet of currentBets) {
+        try {
+          const user = await User.findById(bet.userId);
+          if (!user) continue;
+
+          let finalWinnings = 0;
+          let finalOutcome = "lose";
+
+          // 승리 조건 계산 (기존 로직과 동일)
+          if (
+            bet.choice === "player" &&
+            processedGameResult.result === "player"
+          ) {
+            finalWinnings = bet.amount * 2;
+            finalOutcome = "win";
+          } else if (
+            bet.choice === "banker" &&
+            processedGameResult.result === "banker"
+          ) {
+            finalWinnings = bet.amount * 1.95;
+            finalOutcome = "win";
+          } else if (
+            bet.choice === "tie" &&
+            processedGameResult.result === "tie"
+          ) {
+            finalWinnings = bet.amount * 9;
+            finalOutcome = "win";
+          } else if (
+            bet.choice === "player_pair" &&
+            processedGameResult.playerPairOccurred
+          ) {
+            finalWinnings = bet.amount * 12;
+            finalOutcome = "win";
+          } else if (
+            bet.choice === "banker_pair" &&
+            processedGameResult.bankerPairOccurred
+          ) {
+            finalWinnings = bet.amount * 12;
+            finalOutcome = "win";
+          } else if (
+            (bet.choice === "player" || bet.choice === "banker") &&
+            processedGameResult.result === "tie"
+          ) {
+            finalWinnings = bet.amount;
+            finalOutcome = "draw";
+          }
+
+          user.balance += finalWinnings;
+          user.bettingHistory.push({
+            choice: bet.choice,
+            amount: bet.amount,
+            result: finalOutcome,
+            gameResult: processedGameResult.result,
+            date: new Date(),
+          });
+
+          await user.save();
+
+          // 승리자에게 알림
+          if (finalOutcome === "win") {
+            const userSocket = userSockets.get(bet.userId);
+            if (userSocket) {
+              userSocket.emit("you_won", {
+                choice: bet.choice,
+                amount: bet.amount,
+                winnings: finalWinnings,
+                gameResult: processedGameResult.result,
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Background bet processing error:", err);
+        }
+      }
+    }
+
+    // 리더보드 업데이트
+    await updateAndBroadcastLeaderboard();
+
+    // 베팅 초기화
+    currentBets = [];
+    currentBettingStats = {
+      player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      player_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    };
+
+    // 모든 클라이언트에게 결과 승인 및 잔액 업데이트 알림
+    io.emit("result_approved");
+    io.emit("update_coins");
+    io.emit("betting_status", { active: false, stats: currentBettingStats });
+  } catch (err) {
+    console.error("Background game result processing error:", err);
+  } finally {
+    resultProcessing = false;
+  }
+}
+
+// 백그라운드 게임 중지 함수
+function stopBackgroundGame() {
+  backgroundGameState.isActive = false;
+
+  // 타이머들 정리
+  if (backgroundGameState.gameTimer) {
+    clearTimeout(backgroundGameState.gameTimer);
+    backgroundGameState.gameTimer = null;
+  }
+
+  if (backgroundGameState.bettingTimer) {
+    clearTimeout(backgroundGameState.bettingTimer);
+    backgroundGameState.bettingTimer = null;
+  }
+
+  // 진행 중인 베팅이 있다면 종료
+  if (bettingActive) {
+    bettingActive = false;
+    bettingEndTime = null;
+    io.emit("betting_closed");
+  }
+
+  // admin에게 중지 알림
+  if (backgroundGameState.adminSocketId) {
+    const adminSocket = [...io.sockets.sockets.values()].find(
+      (s) => s.id === backgroundGameState.adminSocketId
+    );
+    if (adminSocket) {
+      adminSocket.emit("background_game_stopped", {
+        gameCount: backgroundGameState.gameCount,
+        maxGames: backgroundGameState.maxGames,
+      });
+    }
+  }
+
+  // 상태 초기화
+  backgroundGameState.gameCount = 0;
+  backgroundGameState.maxGames = 0;
+  backgroundGameState.adminSocketId = null;
+}
 
 io.on("connection", (socket) => {
   // 접속 시 현재 베팅 상태 전송
@@ -1155,6 +1444,108 @@ io.on("connection", (socket) => {
       socket.userId = userId;
     } catch (err) {
       // 소켓 인증 실패
+    }
+  });
+
+  // 채팅 관련 Socket 이벤트들
+  socket.on("join_chat", () => {
+    // 사용자가 채팅에 참여했음을 기록
+    if (socket.userId) {
+    }
+  });
+
+  socket.on("send_chat_message", async (data) => {
+    try {
+      if (!socket.userId || !data.message) return;
+
+      const user = await User.findById(socket.userId).select("username role");
+      if (!user) return;
+
+      const message = data.message.trim();
+      if (message === "" || message.length > 500) return;
+
+      const isAdmin = user.role === "admin";
+
+      // 채팅 메시지 저장
+      const chatMessage = new Chat({
+        userId: user._id,
+        username: user.username,
+        message: message,
+        isAdmin: isAdmin,
+        isHighlighted: isAdmin, // admin 메시지는 기본적으로 강조
+      });
+
+      await chatMessage.save();
+
+      // 모든 연결된 사용자에게 브로드캐스트
+      const messageData = {
+        _id: chatMessage._id,
+        userId: chatMessage.userId,
+        username: chatMessage.username,
+        message: chatMessage.message,
+        isAdmin: chatMessage.isAdmin,
+        isHighlighted: chatMessage.isHighlighted,
+        createdAt: chatMessage.createdAt,
+      };
+
+      // 모든 소켓에 채팅 메시지 전송
+      io.emit("new_chat_message", messageData);
+
+      // Admin 메시지인 경우 특별한 알림 추가
+      if (isAdmin) {
+        io.emit("admin_message_notification", {
+          message: messageData,
+          type: "admin_chat",
+        });
+      }
+    } catch (err) {
+      console.error("Chat message error:", err);
+    }
+  });
+
+  // 강조 메시지 전송 처리
+  socket.on("send_highlight_message", async (data) => {
+    try {
+      if (!socket.userId || !data.message) return;
+
+      const user = await User.findById(socket.userId).select("username role");
+      if (!user) return;
+
+      const message = data.message.trim();
+      if (message === "" || message.length > 500) return;
+
+      // 강조 메시지 저장 (일반 채팅으로 저장하되 강조 표시)
+      const chatMessage = new Chat({
+        userId: user._id,
+        username: user.username,
+        message: message,
+        isAdmin: false,
+        isHighlighted: true, // 강조 메시지로 표시
+      });
+
+      await chatMessage.save();
+
+      // 메시지 데이터 준비
+      const messageData = {
+        _id: chatMessage._id,
+        userId: chatMessage.userId,
+        username: chatMessage.username,
+        message: chatMessage.message,
+        isAdmin: chatMessage.isAdmin,
+        isHighlighted: chatMessage.isHighlighted,
+        createdAt: chatMessage.createdAt,
+      };
+
+      // 모든 소켓에 일반 채팅 메시지로 전송 (채팅 기록용)
+      io.emit("new_chat_message", messageData);
+
+      // 강조 메시지 특별 알림 전송 (2초간 상단 알림바 표시용)
+      io.emit("highlight_message_notification", {
+        message: messageData,
+        type: "highlight_chat",
+      });
+    } catch (err) {
+      console.error("Highlight message error:", err);
     }
   });
 
@@ -1524,6 +1915,72 @@ io.on("connection", (socket) => {
     });
   });
 
+  // 백그라운드 게임 시작 이벤트 (관리자 전용)
+  socket.on("start_background_game", (data) => {
+    const { maxGames } = data;
+
+    // 이미 백그라운드 게임이 진행 중인지 확인
+    if (backgroundGameState.isActive) {
+      return socket.emit("error", "이미 백그라운드 게임이 진행 중입니다.");
+    }
+
+    // 현재 베팅이나 게임이 진행 중인지 확인
+    if (bettingActive || resultProcessing) {
+      return socket.emit(
+        "error",
+        "현재 게임이 진행 중입니다. 잠시 후 다시 시도해주세요."
+      );
+    }
+
+    // 유효한 게임 수인지 확인
+    if (!maxGames || maxGames < 1 || maxGames > 1000) {
+      return socket.emit("error", "게임 수는 1회에서 1000회 사이여야 합니다.");
+    }
+
+    // 백그라운드 게임 상태 설정
+    backgroundGameState.isActive = true;
+    backgroundGameState.gameCount = 0;
+    backgroundGameState.maxGames = maxGames;
+    backgroundGameState.adminSocketId = socket.id;
+
+    // 시작 확인 메시지 전송
+    socket.emit("background_game_started", {
+      message: `백그라운드 게임이 시작되었습니다. (총 ${maxGames}회)`,
+      maxGames: maxGames,
+      gameCount: 0,
+    });
+
+    // 첫 번째 베팅 시작 (1초 후)
+    setTimeout(() => {
+      if (backgroundGameState.isActive) {
+        startBackgroundBetting();
+      }
+    }, 1000);
+  });
+
+  // 백그라운드 게임 중지 이벤트 (관리자 전용)
+  socket.on("stop_background_game", () => {
+    if (!backgroundGameState.isActive) {
+      return socket.emit("error", "백그라운드 게임이 진행 중이지 않습니다.");
+    }
+
+    stopBackgroundGame();
+    socket.emit("background_game_stopped", {
+      message: `백그라운드 게임이 중지되었습니다. (완료된 게임: ${backgroundGameState.gameCount}/${backgroundGameState.maxGames})`,
+      gameCount: backgroundGameState.gameCount,
+      maxGames: backgroundGameState.maxGames,
+    });
+  });
+
+  // 백그라운드 게임 상태 요청 이벤트
+  socket.on("get_background_game_status", () => {
+    socket.emit("background_game_status", {
+      isActive: backgroundGameState.isActive,
+      gameCount: backgroundGameState.gameCount,
+      maxGames: backgroundGameState.maxGames,
+    });
+  });
+
   // 베팅 데이터 수신
   // 베팅 처리 큐와 디바운싱을 위한 변수
   let bettingUpdateQueue = new Map();
@@ -1683,10 +2140,24 @@ io.on("connection", (socket) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
-      const user = await User.findById(userId);
 
-      if (!user) {
-        return socket.emit("error", "사용자를 찾을 수 없습니다.");
+      // 메모리 캐시에서 사용자 정보 확인 (place_bet과 동일한 방식)
+      let userData = userCache.get(userId);
+      let user;
+
+      if (
+        userData &&
+        userData.cachedAt &&
+        Date.now() - userData.cachedAt < CACHE_TTL
+      ) {
+        user = userData;
+      } else {
+        user = await User.findById(userId).lean();
+        if (!user) {
+          return socket.emit("error", "사용자를 찾을 수 없습니다.");
+        }
+        user.cachedAt = Date.now();
+        userCache.set(userId, user);
       }
 
       // currentBets 배열에서 해당 사용자의 가장 마지막 베팅 찾기
@@ -1707,9 +2178,26 @@ io.on("connection", (socket) => {
       // currentBets에서 해당 베팅 제거
       currentBets.splice(lastBetIndex, 1);
 
-      // 즉시 잔액 복원
+      // 즉시 잔액 복원 (메모리에서)
       user.balance += betToCancel.amount;
-      await user.save();
+      user.rollingWagered = Math.max(
+        0,
+        (user.rollingWagered || 0) - betToCancel.amount
+      );
+      user.cachedAt = Date.now();
+      userCache.set(userId, user);
+
+      // DB 저장은 비동기로 처리 (await 제거)
+      User.findByIdAndUpdate(userId, {
+        $inc: {
+          balance: betToCancel.amount,
+          rollingWagered: -betToCancel.amount,
+        },
+      })
+        .exec()
+        .catch((err) => {
+          console.error("베팅 취소 DB 업데이트 에러:", err);
+        });
 
       // 베팅 통계 업데이트 (차감)
       if (currentBettingStats[betToCancel.choice]) {
@@ -2012,7 +2500,11 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
     const fee = Math.floor(amount * 0.1);
     const actualAmount = amount - fee;
 
-    // 환전 요청 생성 (사용자 잔액/롤링은 관리자 승인 시 차감)
+    // 즉시 잔액 차감 (중복 환전 방지)
+    user.balance -= amount;
+    await user.save();
+
+    // 환전 요청 생성
     const exchangeRequest = new ExchangeRequest({
       userId: user._id,
       username: user.username,
@@ -2023,6 +2515,12 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
     });
     await exchangeRequest.save();
 
+    // 사용자에게 잔액 업데이트 알림
+    const userSocket = userSockets.get(user._id.toString());
+    if (userSocket) {
+      userSocket.emit("balance_updated", { newBalance: user.balance });
+    }
+
     // 모든 관리자에게 새로운 환전 요청 알림
     io.emit("new_exchange_request", {
       username: user.username,
@@ -2032,8 +2530,12 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       createdAt: exchangeRequest.createdAt,
     });
 
+    // 리더보드 업데이트
+    await updateAndBroadcastLeaderboard();
+
     res.json({
       message: "환전 신청이 완료되었습니다. 관리자 승인을 기다려주세요.",
+      newBalance: user.balance,
     });
   } catch (err) {
     res.status(500).json({ message: "서버 에러" });
@@ -2247,22 +2749,13 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
     }
 
     if (status === "approved") {
-      if (user.balance < request.requestAmount) {
-        return res.status(400).json({
-          message: `사용자 잔액 부족. (현재 잔액: ${user.balance.toLocaleString()}원)`,
-        });
-      }
-
-      // 잔액 차감 (롤링은 유지)
-      user.balance -= request.requestAmount;
-
-      // 환전 후에도 롤링 상태는 유지 (차감하지 않음)
-      // user.rollingWagered는 그대로 유지
-
+      // 환전 승인 시에는 별도 처리 없음 (이미 신청 시 차감됨)
+      // 롤링은 그대로 유지
+    } else if (status === "rejected") {
+      // 환전 거절 시 잔액 복원
+      user.balance += request.requestAmount;
       await user.save();
     }
-
-    // 'rejected'의 경우 사용자 잔액/롤링에 변경 없음
 
     request.status = status;
     await request.save();
@@ -2271,7 +2764,6 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
     const userSocket = userSockets.get(user._id.toString());
     if (userSocket) {
       if (status === "approved") {
-        userSocket.emit("balance_updated", { newBalance: user.balance });
         userSocket.emit("exchange_request_processed", {
           status: "approved",
           requestAmount: request.requestAmount,
@@ -2279,25 +2771,25 @@ app.put("/api/admin/exchange-requests/:id", auth("admin"), async (req, res) => {
           newBalance: user.balance,
         });
       } else {
+        userSocket.emit("balance_updated", { newBalance: user.balance });
         userSocket.emit("exchange_request_processed", {
           status: "rejected",
           requestAmount: request.requestAmount,
           actualAmount: request.actualAmount,
+          newBalance: user.balance,
         });
       }
     }
 
-    // 환전 승인 시 리더보드 업데이트
-    if (status === "approved") {
-      // 모든 관리자에게 사용자 잔액 업데이트 알림
-      io.emit("user_balance_updated", {
-        userId: user._id.toString(),
-        newBalance: user.balance,
-      });
+    // 잔액 변동이 있는 경우 리더보드 업데이트
+    // 모든 관리자에게 사용자 잔액 업데이트 알림
+    io.emit("user_balance_updated", {
+      userId: user._id.toString(),
+      newBalance: user.balance,
+    });
 
-      // 리더보드 업데이트
-      await updateAndBroadcastLeaderboard();
-    }
+    // 리더보드 업데이트
+    await updateAndBroadcastLeaderboard();
 
     res.json({
       message: `환전 요청이 ${
@@ -2586,6 +3078,38 @@ const moneyRequestSchema = new mongoose.Schema({
 });
 
 const MoneyRequest = mongoose.model("MoneyRequest", moneyRequestSchema);
+
+// 채팅 스키마
+const chatSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  username: {
+    type: String,
+    required: true,
+  },
+  message: {
+    type: String,
+    required: true,
+    maxlength: 500,
+  },
+  isAdmin: {
+    type: Boolean,
+    default: false,
+  },
+  isHighlighted: {
+    type: Boolean,
+    default: false,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+const Chat = mongoose.model("Chat", chatSchema);
 
 // 사용자 목록 조회 API (자신 제외)
 app.get("/api/users/list", auth(), async (req, res) => {
@@ -3010,7 +3534,98 @@ app.get("/api/transfer/history", auth(), async (req, res) => {
 });
 
 // =====================
+// 채팅 API
+// =====================
+
+// 채팅 기록 조회 API
+app.get("/api/chat/messages", auth(), async (req, res) => {
+  try {
+    const messages = await Chat.find().sort({ createdAt: -1 }).limit(50).lean();
+
+    // 최신 순으로 정렬 (UI에서 표시할 때는 오래된 순으로)
+    const sortedMessages = messages.reverse();
+
+    res.json(sortedMessages);
+  } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 채팅 전송 API
+app.post("/api/chat/send", auth(), async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    if (!message || message.trim() === "" || message.length > 500) {
+      return res.status(400).json({
+        message: "메시지가 비어있거나 500자를 초과합니다.",
+      });
+    }
+
+    const user = await User.findById(req.user.id).select("username role");
+    if (!user) {
+      return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+    }
+
+    const isAdmin = user.role === "admin";
+
+    // 채팅 메시지 저장
+    const chatMessage = new Chat({
+      userId: user._id,
+      username: user.username,
+      message: message.trim(),
+      isAdmin: isAdmin,
+      isHighlighted: isAdmin, // admin 메시지는 기본적으로 강조
+    });
+
+    await chatMessage.save();
+
+    // 모든 연결된 사용자에게 브로드캐스트
+    const messageData = {
+      _id: chatMessage._id,
+      userId: chatMessage.userId,
+      username: chatMessage.username,
+      message: chatMessage.message,
+      isAdmin: chatMessage.isAdmin,
+      isHighlighted: chatMessage.isHighlighted,
+      createdAt: chatMessage.createdAt,
+    };
+
+    // 모든 소켓에 채팅 메시지 전송
+    io.emit("new_chat_message", messageData);
+
+    res.json({ message: "채팅이 전송되었습니다." });
+  } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// 채팅 메시지 삭제 API (관리자만)
+app.delete("/api/chat/message/:messageId", auth("admin"), async (req, res) => {
+  try {
+    const { messageId } = req.params;
+
+    const deletedMessage = await Chat.findByIdAndDelete(messageId);
+    if (!deletedMessage) {
+      return res.status(404).json({ message: "메시지를 찾을 수 없습니다." });
+    }
+
+    // 모든 사용자에게 메시지 삭제 알림
+    io.emit("chat_message_deleted", { messageId });
+
+    res.json({ message: "메시지가 삭제되었습니다." });
+  } catch (err) {
+    res.status(500).json({ message: "서버 에러" });
+  }
+});
+
+// =====================
 // 서버 시작
 // =====================
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {});
+server.listen(PORT, () => {
+  console.log(`서버가 포트 ${PORT}에서 시작되었습니다.`);
+  console.log(`MongoDB 연결: ${MONGO_URI}`);
+  console.log(`프론트엔드 URL: ${FRONTEND_URL}`);
+  console.log(`바카라 게임 서버 준비 완료!`);
+});
