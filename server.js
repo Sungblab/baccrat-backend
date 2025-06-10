@@ -1127,7 +1127,7 @@ let backgroundGameState = {
 function startBackgroundBetting() {
   if (!backgroundGameState.isActive) return;
 
-  const bettingDuration = 20; // 20초
+  const bettingDuration = 16; // 16초
   const endTime = new Date(Date.now() + bettingDuration * 1000);
 
   // 베팅 활성화
@@ -1138,7 +1138,7 @@ function startBackgroundBetting() {
   io.emit("betting_started");
   io.emit("betting_end_time", endTime);
 
-  // 20초 후 베팅 종료 및 게임 시작
+  // 16초 후 베팅 종료 및 게임 시작
   backgroundGameState.bettingTimer = setTimeout(() => {
     if (!bettingActive || !backgroundGameState.isActive) return;
 
@@ -1216,13 +1216,13 @@ function startBackgroundGame() {
         return;
       }
 
-      // 다음 게임 스케줄 (4초 후)
+      // 다음 게임 스케줄 (3초 후)
       if (backgroundGameState.isActive) {
         backgroundGameState.gameTimer = setTimeout(() => {
           if (backgroundGameState.isActive) {
             startBackgroundBetting();
           }
-        }, 4000);
+        }, 3000);
       }
     }, 5000);
   });
@@ -1564,7 +1564,7 @@ io.on("connection", (socket) => {
 
   // 베팅 시작 이벤트 (관리자에 의해 호출됨)
   socket.on("start_betting", () => {
-    const bettingDuration = 20; // 20초
+    const bettingDuration = 16; // 16초
     const endTime = new Date(Date.now() + bettingDuration * 1000);
 
     // 베팅 활성화
@@ -1575,7 +1575,7 @@ io.on("connection", (socket) => {
     io.emit("betting_started");
     io.emit("betting_end_time", endTime);
 
-    // 20초 후 베팅 종료
+    // 16초 후 베팅 종료
     setTimeout(() => {
       if (!bettingActive) return; // 이미 다른 로직으로 종료되었다면 실행 안함
       bettingActive = false;
