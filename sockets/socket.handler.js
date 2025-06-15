@@ -73,12 +73,10 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
     // 사용자 접속 기반 자동 게임이 활성화되어 있으면 중지
     if (autoUserGameState.isActive) {
-      console.log("[ADMIN_AUTO] 사용자 자동 게임 중지");
       stopAutoUserGame(true);
     }
 
     adminAutoGameState.isActive = true;
-    console.log("[ADMIN_AUTO] 관리자 자동 베팅 시작");
 
     // 베팅이 진행 중이 아니라면 바로 시작
     if (!bettingActive && !resultProcessing) {
@@ -91,7 +89,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     if (!adminAutoGameState.isActive) return;
 
     adminAutoGameState.isActive = false;
-    console.log("[ADMIN_AUTO] 관리자 자동 베팅 중지");
 
     // 타이머들 정리
     if (adminAutoGameState.autoTimer) {
@@ -815,13 +812,9 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
       // 이미 접속한 사용자면 중복 처리 방지
       if (autoUserGameState.connectedUsers.has(userId)) {
-        console.log(
-          `[AUTO_USER_GAME] User already connected: ${user.username} (${userId})`
-        );
         return;
       }
 
-      console.log(`[AUTO_USER_GAME] User joined: ${user.username} (${userId})`);
       autoUserGameState.connectedUsers.add(userId);
       socket.userIdForAutoGame = userId;
 
@@ -929,9 +922,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       // 관리자는 자동 게임 대상에서 제외
       if (user.role === "admin" || user.role === "superadmin") return;
 
-      console.log(
-        `[AUTO_USER_GAME] User left (explicit): ${user.username} (${userId})`
-      );
       autoUserGameState.connectedUsers.delete(userId);
 
       // 모든 사용자가 나가면 자동 게임 중지 (게임 완료 후)
@@ -953,9 +943,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
     // 바카라 게임에서 사용자 제거 (연결 끊김)
     if (socket.userIdForAutoGame) {
-      console.log(
-        `[AUTO_USER_GAME] User disconnected: ${socket.userIdForAutoGame}`
-      );
       autoUserGameState.connectedUsers.delete(socket.userIdForAutoGame);
 
       // 모든 사용자가 나가면 자동 게임 중지 (게임 완료 후)
@@ -1319,9 +1306,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
   socket.on("place_bet", async (betData) => {
     const { choice, amount, token } = betData;
-    console.log("==== 베팅 요청 수신 ====");
-    console.log("베팅 데이터:", { choice, amount });
-
     if (!bettingActive) {
       return socket.emit("error", "현재 베팅이 진행 중이지 않습니다.");
     }
@@ -1331,17 +1315,12 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
-      console.log("사용자 ID:", userId);
 
       // 베팅 시에는 항상 최신 DB 정보를 사용 (캐시 동기화 문제 해결)
       let user = await User.findById(userId).lean();
       if (!user) {
         return socket.emit("error", "사용자를 찾을 수 없습니다.");
       }
-      console.log("DB에서 최신 사용자 정보 조회:", {
-        balance: user.balance,
-        username: user.username,
-      });
 
       // 캐시도 최신 정보로 업데이트
       user.cachedAt = Date.now();
@@ -1359,23 +1338,13 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
           "베팅 금액은 1,000원에서 500,000원 사이여야 합니다."
         );
       }
-      console.log("잔액 검사:", {
-        userBalance: user.balance,
-        betAmount: amount,
-        sufficient: user.balance >= amount,
-      });
       if (user.balance < amount) {
-        console.log("잔액 부족으로 베팅 거부");
         return socket.emit("error", "잔액이 부족합니다.");
       }
       user.balance -= amount;
       user.rollingWagered = (user.rollingWagered || 0) + amount;
       user.cachedAt = Date.now();
       userCache.set(userId, user);
-      console.log("베팅 성공 - 잔액 차감 후:", {
-        newBalance: user.balance,
-        rollingWagered: user.rollingWagered,
-      });
       User.findByIdAndUpdate(userId, {
         $inc: {
           balance: -amount,
@@ -1540,12 +1509,10 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
     // 기존 관리자 자동 베팅이 활성화되어 있으면 중지
     if (adminAutoGameState.isActive) {
-      console.log("[AUTO_USER_GAME] 기존 관리자 자동 베팅 중지");
       stopAdminAutoBetting();
     }
 
     autoUserGameState.isActive = true;
-    console.log("[AUTO_USER_GAME] 사용자 접속으로 인한 자동 게임 시작");
 
     // 베팅이 진행 중이 아니라면 바로 시작
     if (!bettingActive && !resultProcessing) {
@@ -1567,15 +1534,11 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     // 즉시 중지가 아니고, 현재 베팅 중이거나 게임 결과 처리 중이면 예약 중지
     if (!immediate && (bettingActive || resultProcessing)) {
       autoUserGameState.shouldStopAfterCurrentGame = true;
-      console.log(
-        "[AUTO_USER_GAME] 게임 진행 중이므로 현재 게임 완료 후 중지 예약"
-      );
       return;
     }
 
     autoUserGameState.isActive = false;
     autoUserGameState.shouldStopAfterCurrentGame = false;
-    console.log("[AUTO_USER_GAME] 모든 사용자 퇴장으로 인한 자동 게임 중지");
 
     // 타이머들 정리
     if (autoUserGameState.gameTimer) {
@@ -1616,7 +1579,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
           autoUserGameState.shouldStopAfterCurrentGame ||
           autoUserGameState.connectedUsers.size === 0
         ) {
-          console.log("[AUTO_USER_GAME] 베팅 완료 후 자동 게임 중지 실행");
           stopAutoUserGame(true); // 즉시 중지
           return;
         }
@@ -1677,7 +1639,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
           autoUserGameState.shouldStopAfterCurrentGame ||
           autoUserGameState.connectedUsers.size === 0
         ) {
-          console.log("[AUTO_USER_GAME] 게임 완료 후 자동 게임 중지 실행");
           stopAutoUserGame(true); // 즉시 중지
         }
         // 사용자가 여전히 접속해 있다면 다음 게임 스케줄

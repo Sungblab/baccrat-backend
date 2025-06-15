@@ -50,10 +50,6 @@ class BlackjackStatsService {
       if (playersData.length > 0) {
         await this.updatePlayerStats(playersData[0]);
       }
-
-      console.log(
-        `블랙잭 게임 결과 저장 완료 - 세션: ${sessionId}, 플레이어: ${playersData[0]?.username}`
-      );
       return gameRecord;
     } catch (error) {
       console.error("게임 결과 저장 오류:", error);
@@ -175,10 +171,7 @@ class BlackjackStatsService {
 
       // 캐시 무효화
       this.playerStatsCache.delete(userId.toString());
-
-      console.log(`플레이어 통계 업데이트 완료 - ${username}: ${result}`);
     } catch (error) {
-      console.error("플레이어 통계 업데이트 오류:", error);
       throw error;
     }
   }
@@ -272,9 +265,6 @@ class BlackjackStatsService {
         },
       ]);
 
-      console.log(
-        `리더보드 조회 완료 - ${sortBy} 기준, ${leaderboard.length}명`
-      );
       return leaderboard;
     } catch (error) {
       console.error("리더보드 조회 오류:", error);
@@ -452,12 +442,6 @@ class BlackjackStatsService {
 
       await user.save();
 
-      console.log(
-        `플레이어 잔액 조정 완료 - ${user.username}: ${oldBalance} -> ${
-          user.balance
-        } (${amount >= 0 ? "+" : ""}${amount})`
-      );
-
       return {
         success: true,
         username: user.username,
@@ -475,7 +459,6 @@ class BlackjackStatsService {
   // 캐시 클리어
   clearCache() {
     this.playerStatsCache.clear();
-    console.log("블랙잭 통계 캐시가 클리어되었습니다.");
   }
 }
 

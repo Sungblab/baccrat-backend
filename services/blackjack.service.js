@@ -54,7 +54,6 @@ class BlackjackService {
     };
 
     this.gameSessions.set(userId, gameSession);
-    console.log(`[BlackjackService] 새 게임 세션 생성: ${username}`);
     return gameSession;
   }
 
@@ -549,14 +548,10 @@ class BlackjackService {
     // 보험 처리
     if (session.insuranceBet > 0) {
       if (dealerBlackjack) {
-        // 딜러 블랙잭 - 보험 당첨 (2:1 배당)
         const insurancePayout = session.insuranceBet * 3;
         session.balance += insurancePayout;
         session.totalPayout += insurancePayout;
-        console.log(`보험 당첨: ${insurancePayout}`);
       } else {
-        // 보험 실패 - 이미 차감된 상태이므로 추가 처리 없음
-        console.log(`보험 실패: ${session.insuranceBet}`);
       }
     }
 
@@ -677,10 +672,6 @@ class BlackjackService {
     }
 
     session.lastActivity = new Date();
-
-    console.log(
-      `[BlackjackService] 다음 게임을 위한 상태 초기화 완료: ${session.username}`
-    );
   }
 
   // 스플릿 핸드 완료 처리
@@ -715,8 +706,6 @@ class BlackjackService {
     // 게임 상태 완전 초기화
     this.prepareForNextGame(session);
     session.status = "waiting";
-
-    console.log(`[BlackjackService] 새 게임 초기화 완료: ${session.username}`);
 
     return {
       success: true,
@@ -789,7 +778,6 @@ class BlackjackService {
     for (let [userId, session] of this.gameSessions) {
       if (now - session.lastActivity > maxInactiveTime) {
         this.gameSessions.delete(userId);
-        console.log(`Cleaned up inactive session for user ${userId}`);
       }
     }
   }
