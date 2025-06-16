@@ -65,18 +65,8 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     nextAutoStart: null,
   };
 
-  // 사용자 접속 기반 자동 게임 상태 관리 (사용자 없을 때 자동 종료)
-  let autoUserGameState = {
-    isActive: false,
-    connectedUsers: new Set(), // 바카라 게임에 접속한 사용자들 추적
-    gameTimer: null,
-    bettingTimer: null,
-    shouldStopAfterCurrentGame: false, // 현재 게임 완료 후 중지 플래그
-    gameCount: 0, // 게임 카운트 추가
-    isManualStop: false, // 수동 중지 플래그 (나가기 버튼)
-    noUserTimeout: null, // 사용자 없을 때 자동 종료 타이머
-    NO_USER_TIMEOUT_DURATION: 30000, // 30초 후 자동 종료
-  };
+  // 사용자 접속 기반 자동 게임 상태 관리 (사용자 없을 때 자동 종료) - 제거됨
+  // 이제 오직 관리자만 수동으로 게임을 시작/중지할 수 있습니다.
 
   const cleanUserCache = () => {
     const now = Date.now();
@@ -93,10 +83,7 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
   function startAdminAutoBetting() {
     if (adminAutoGameState.isActive || backgroundGameState.isActive) return;
 
-    // 사용자 접속 기반 자동 게임이 활성화되어 있으면 중지
-    if (autoUserGameState.isActive) {
-      stopAutoUserGame(true);
-    }
+    // 사용자 접속 기반 자동 게임 로직 제거됨
 
     adminAutoGameState.isActive = true;
 
@@ -417,49 +404,7 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     }, bettingDuration * 1000);
   }
 
-  // 관리자들에게 사용자 자동 게임 상태 브로드캐스트
-  function broadcastUserAutoGameStatus() {
-    // 관리자 권한을 가진 사용자들에게만 상태 전송
-    for (const [userId, socket] of userSockets.entries()) {
-      // 사용자 정보를 캐시에서 확인하거나 DB에서 조회
-      User.findById(userId)
-        .select("role")
-        .then((user) => {
-          if (user && (user.role === "admin" || user.role === "superadmin")) {
-            socket.emit("user_auto_game_status_update", {
-              isActive: autoUserGameState.isActive,
-              connectedUsers: autoUserGameState.connectedUsers.size,
-            });
-          }
-        })
-        .catch((err) => {
-          // 에러 무시 (사용자가 없을 수 있음)
-        });
-    }
-  }
 
-  // 사용자가 없을 때 자동 종료 타이머 시작
-  function startNoUserTimeout() {
-    // 기존 타이머가 있으면 제거
-    if (autoUserGameState.noUserTimeout) {
-      clearTimeout(autoUserGameState.noUserTimeout);
-    }
-    
-    autoUserGameState.noUserTimeout = setTimeout(() => {
-      if (autoUserGameState.connectedUsers.size === 0 && autoUserGameState.isActive) {
-        console.log("30초 동안 사용자가 없어서 자동 게임을 종료합니다.");
-        stopAutoUserGame(false, "no_users");
-      }
-    }, autoUserGameState.NO_USER_TIMEOUT_DURATION);
-  }
-
-  // 사용자가 없을 때 자동 종료 타이머 취소
-  function cancelNoUserTimeout() {
-    if (autoUserGameState.noUserTimeout) {
-      clearTimeout(autoUserGameState.noUserTimeout);
-      autoUserGameState.noUserTimeout = null;
-    }
-  }
 
   function sendCardsToUserHtml(gameResult, callback) {
     io.emit("clear_cards_display_on_user_html");
@@ -861,46 +806,7 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     } catch (err) {}
   });
 
-  // 사용자가 바카라 게임에 접속했음을 알림
-  socket.on("user_joined_baccarat", async (token) => {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const userId = decoded.id;
-      const user = await User.findById(userId).select("username role");
-
-      if (!user) return;
-
-      // 관리자는 자동 게임 대상에서 제외
-      if (user.role === "admin" || user.role === "superadmin") return;
-
-      // 이미 접속한 사용자면 중복 처리 방지
-      if (autoUserGameState.connectedUsers.has(userId)) {
-        return;
-      }
-
-      autoUserGameState.connectedUsers.add(userId);
-      socket.userIdForAutoGame = userId;
-
-      // 첫 번째 사용자가 접속하면 자동 게임 시작
-      if (
-        autoUserGameState.connectedUsers.size === 1 &&
-        !backgroundGameState.isActive
-      ) {
-        startAutoUserGame();
-      }
-
-      // 현재 상태를 클라이언트에 알림
-      socket.emit("auto_game_status", {
-        isActive: autoUserGameState.isActive,
-        connectedUsers: autoUserGameState.connectedUsers.size,
-      });
-
-      // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
-      broadcastUserAutoGameStatus();
-    } catch (err) {
-      console.error("User joined baccarat error:", err);
-    }
-  });
+  // 사용자가 바카라 게임에 접속했음을 알림 - 제거됨 (관리자만 게임 제어)
 
   socket.on("send_chat_message", async (data) => {
     try {
@@ -973,92 +879,17 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     }
   });
 
-  // 사용자가 바카라 게임에서 나갔음을 알림 (명시적 퇴장)
-  socket.on("user_left_baccarat", async (token) => {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const userId = decoded.id;
-      const user = await User.findById(userId).select("username role");
-
-      if (!user) return;
-
-      // 관리자는 자동 게임 대상에서 제외
-      if (user.role === "admin" || user.role === "superadmin") return;
-      
-      // 연결된 사용자 목록에서 제거 (게임은 계속 진행)
-      autoUserGameState.connectedUsers.delete(userId);
-      
-      socket.userIdForAutoGame = null;
-      
-      console.log(`사용자 ${userId} 바카라 게임 퇴장 (게임은 계속 진행)`);
-
-      // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
-      broadcastUserAutoGameStatus();
-    } catch (err) {
-      console.error("User left baccarat error:", err);
-    }
-  });
-
-  // 게임 수동 중지 (나가기 버튼)
-  socket.on("stop_auto_game", async (token) => {
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const userId = decoded.id;
-      const user = await User.findById(userId).select("username role");
-
-      if (!user) return;
-
-      // 관리자만 게임 중지 가능
-      if (user.role === "admin" || user.role === "superadmin") {
-        stopAutoUserGame(true); // 수동 중지
-        console.log(`관리자 ${userId}에 의해 자동 게임 중지됨`);
-        
-        // 모든 클라이언트에게 게임 중지 알림
-        io.emit("auto_game_stopped", {
-          reason: "manual_stop",
-          stoppedBy: user.username
-        });
-        
-        broadcastUserAutoGameStatus();
-      }
-      
-    } catch (err) {
-      console.error("Stop auto game error:", err);
-    }
-  });
+  // 사용자가 바카라 게임에서 나갔음을 알림 - 제거됨 (관리자만 게임 제어)
+  
+  // 게임 수동 중지 - 제거됨 (관리자만 게임 제어)
 
   socket.on("disconnect", () => {
     if (socket.userId) {
       userSockets.delete(socket.userId);
     }
-
-    // 바카라 게임에서 사용자 제거 (연결 끊김)
-    if (socket.userIdForAutoGame) {
-      const userId = socket.userIdForAutoGame;
-      
-      // 연결된 사용자 목록에서 제거
-      autoUserGameState.connectedUsers.delete(userId);
-      
-      console.log(`사용자 ${userId} 연결 해제 (현재 접속자: ${autoUserGameState.connectedUsers.size}명)`);
-
-      // 사용자가 모두 나갔고 게임이 활성화되어 있으면 30초 후 자동 종료 타이머 시작
-      if (autoUserGameState.connectedUsers.size === 0 && autoUserGameState.isActive) {
-        console.log("모든 사용자가 나갔습니다. 30초 후 자동 종료됩니다.");
-        startNoUserTimeout();
-      }
-
-      // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
-      broadcastUserAutoGameStatus();
-      
-      // 클라이언트들에게 사용자 나감 알림 (게임 상태 포함)
-      io.emit("user_left", {
-        userCount: autoUserGameState.connectedUsers.size,
-        isGameActive: autoUserGameState.isActive
-      });
-    }
   });
 
-  // 사용자 바카라 게임 참여 (백그라운드 방식)
+  // 사용자 바카라 게임 참여 (세션 복원만 처리)
   socket.on("join_baccarat_game", async (token) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
@@ -1067,29 +898,6 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
       if (!user) return;
 
-      // 관리자는 자동 게임 대상에서 제외
-      if (user.role === "admin" || user.role === "superadmin") {
-        // 관리자에게는 현재 게임 상태만 전송
-        socket.emit("game_state_restored", {
-          gameState: gameSessionState,
-          bettingActive: bettingActive,
-          bettingEndTime: bettingEndTime,
-          autoGameActive: autoUserGameState.isActive,
-          scheduledStop: scheduledStop
-        });
-        return;
-      }
-
-      socket.userIdForAutoGame = userId;
-      
-      // 연결된 사용자 목록에 추가
-      autoUserGameState.connectedUsers.add(userId);
-      
-      // 사용자가 다시 접속했으면 자동 종료 타이머 취소
-      if (autoUserGameState.connectedUsers.size > 0) {
-        cancelNoUserTimeout();
-      }
-      
       // 사용자의 현재 베팅 정보 가져오기
       const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
         if (curBet.userId === userId) {
@@ -1103,19 +911,19 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         gameState: gameSessionState,
         bettingActive: bettingActive,
         bettingEndTime: bettingEndTime,
-        autoGameActive: autoUserGameState.isActive,
-        scheduledStop: scheduledStop,
+        backgroundGameActive: backgroundGameState.isActive,
+        adminAutoGameActive: adminAutoGameState.isActive,
         restoredFromSession: true,
         userBalance: user.balance,
         currentBets: myCurrentBetsOnChoices,
-        bettingStats: currentBettingStats
+        bettingStats: currentBettingStats,
       };
       
       console.log(`사용자 ${userId} 게임 상태 복원:`, {
         bettingActive: bettingActive,
         bettingEndTime: bettingEndTime,
         currentBets: myCurrentBetsOnChoices,
-        gamePhase: gameSessionState.currentGamePhase
+        gamePhase: gameSessionState.currentGamePhase,
       });
       
       // 클라이언트에 게임 상태 전송
@@ -1132,38 +940,7 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
       }
 
-      // 첫 번째 사용자가 접속하고 모든 게임이 비활성화 상태일 때만 시작
-      // 베팅이 진행 중이거나 결과 처리 중이면 절대 새 게임을 시작하지 않음
-      const canStartNewGame = !autoUserGameState.isActive && 
-                              !adminAutoGameState.isActive && 
-                              !backgroundGameState.isActive && 
-                              !bettingActive && 
-                              !resultProcessing &&
-                              autoUserGameState.connectedUsers.size === 1; // 정확히 첫 번째 사용자일 때만
-      
-      if (canStartNewGame) {
-        console.log('첫 번째 사용자 접속으로 자동 게임 시작');
-        startAutoUserGame();
-      } else {
-        if (bettingActive || resultProcessing) {
-          console.log('게임 진행 중이므로 새로운 자동 게임을 시작하지 않음 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
-        } else if (autoUserGameState.isActive || adminAutoGameState.isActive || backgroundGameState.isActive) {
-          console.log('다른 게임이 이미 활성화되어 있음 (자동:', autoUserGameState.isActive, ', 관리자:', adminAutoGameState.isActive, ', 백그라운드:', backgroundGameState.isActive, ')');
-        } else {
-          console.log('게임 시작 조건 불충족 (접속자 수:', autoUserGameState.connectedUsers.size, ')');
-        }
-      }
-
-      // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
-      broadcastUserAutoGameStatus();
-      
-      // 클라이언트들에게 사용자 접속 알림 (게임 상태 포함)
-      io.emit("user_joined", {
-        userCount: autoUserGameState.connectedUsers.size,
-        isGameActive: autoUserGameState.isActive
-      });
-      
-      console.log(`사용자 ${userId} 바카라 게임 참여 (접속자: ${autoUserGameState.connectedUsers.size}명)`);
+      console.log(`사용자 ${userId} 바카라 게임 참여 (세션 복원만)`);
       
     } catch (err) {
       console.error("Join baccarat game error:", err);
@@ -1719,378 +1496,9 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     });
   });
 
-  // 사용자 접속 기반 자동 게임 시작 함수 (백그라운드 방식으로 변경)
-  function startAutoUserGame() {
-    // 중복 실행 방지 - 더 엄격한 조건 검사
-    if (autoUserGameState.isActive || backgroundGameState.isActive || adminAutoGameState.isActive) {
-      console.log('이미 다른 게임이 활성화되어 있음. 자동 게임 시작 취소');
-      return;
-    }
+  // 사용자 접속 기반 자동 게임 함수들 제거됨 - 관리자만 게임 제어 가능
 
-    // 베팅이나 결과 처리 중이면 게임 시작 금지
-    if (bettingActive || resultProcessing) {
-      console.log('베팅 또는 결과 처리 중이므로 자동 게임 시작 취소 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
-      return;
-    }
-
-    // 기존 관리자 자동 베팅이 활성화되어 있으면 중지
-    if (adminAutoGameState.isActive) {
-      stopAdminAutoBetting();
-    }
-
-    autoUserGameState.isActive = true;
-    autoUserGameState.isManualStop = false;
-    autoUserGameState.gameCount = 0;
-
-    console.log('사용자 기반 자동 게임 시작됨 (접속자:', autoUserGameState.connectedUsers.size, '명)');
-
-    // 안전한 지연 후 베팅 시작
-    setTimeout(() => {
-      // 다시 한 번 상태 확인
-      if (autoUserGameState.isActive && !bettingActive && !resultProcessing) {
-        startAutoUserBetting();
-      } else {
-        console.log('게임 시작 조건이 변경되어 베팅 시작 취소');
-        autoUserGameState.isActive = false;
-      }
-    }, 1000);
-  }
-
-  // 사용자 접속 기반 자동 게임 중지 함수 (수동 중지 또는 사용자 없을 때)
-  function stopAutoUserGame(isManualStop = false, reason = 'manual') {
-    if (!autoUserGameState.isActive) return;
-
-    // 수동 중지가 아니고 사용자 없음이 아니면 중지하지 않음
-    if (!isManualStop && reason !== 'no_users') {
-      console.log('자동 게임은 수동 중지 또는 사용자 없을 때만 종료됩니다.');
-      return;
-    }
-
-    autoUserGameState.isActive = false;
-    autoUserGameState.shouldStopAfterCurrentGame = false;
-    autoUserGameState.isManualStop = isManualStop;
-    
-    // 예약 종료 취소
-    cancelScheduledStop();
-
-    // 타이머들 정리
-    if (autoUserGameState.gameTimer) {
-      clearTimeout(autoUserGameState.gameTimer);
-      autoUserGameState.gameTimer = null;
-    }
-    if (autoUserGameState.bettingTimer) {
-      clearTimeout(autoUserGameState.bettingTimer);
-      autoUserGameState.bettingTimer = null;
-    }
-    
-    // 사용자 없음 타이머 정리
-    cancelNoUserTimeout();
-    
-    // 베팅 진행 중이면 강제 종료
-    if (bettingActive) {
-      bettingActive = false;
-      bettingEndTime = null;
-      io.emit("betting_closed");
-    }
-    
-    let stopMessage = isManualStop ? 
-      '사용자 기반 자동 게임 수동 중지됨' : 
-      `사용자 기반 자동 게임 자동 중지됨 (이유: ${reason})`;
-    
-    console.log(stopMessage);
-    
-    // 클라이언트에 게임 종료 알림
-    io.emit("user_auto_game_stopped", {
-      message: reason === 'no_users' ? '사용자가 없어서 게임이 자동 종료되었습니다.' : '게임이 종료되었습니다.',
-      reason: reason
-    });
-    
-    // 게임 상태 업데이트
-    updateGameState('waiting');
-  }
-
-  // 사용자 접속 기반 자동 베팅 시작 (백그라운드 방식)
-  function startAutoUserBetting() {
-    if (!autoUserGameState.isActive) {
-      console.log('자동 게임이 비활성화되어 베팅 시작 취소');
-      return;
-    }
-
-    // 이미 베팅이 진행 중이거나 결과 처리 중이면 중단
-    if (bettingActive || resultProcessing) {
-      console.log('이미 베팅 진행 중이거나 결과 처리 중이므로 베팅 시작 취소 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
-      return;
-    }
-
-    const bettingDuration = 16;
-    const endTime = new Date(Date.now() + bettingDuration * 1000);
-    bettingActive = true;
-    bettingEndTime = endTime;
-    
-    // 게임 상태 업데이트
-    updateGameState('betting', {
-      gameStartTime: Date.now(),
-      bettingEndTime: endTime
-    });
-
-    io.emit("betting_started");
-    io.emit("betting_end_time", endTime);
-
-    autoUserGameState.bettingTimer = setTimeout(() => {
-      if (!bettingActive || !autoUserGameState.isActive) return;
-      bettingActive = false;
-      bettingEndTime = null;
-      
-      // 게임 상태 업데이트
-      updateGameState('playing');
-      
-      io.emit("betting_closed");
-
-      setTimeout(() => {
-        if (autoUserGameState.isActive) {
-          runAutoUserGame();
-        }
-      }, 2000);
-    }, bettingDuration * 1000);
-  }
-
-  // 사용자 접속 기반 자동 게임 실행 (백그라운드 방식)
-  function runAutoUserGame() {
-    if (!autoUserGameState.isActive) return;
-
-    let gameResult;
-    if (fixedGameResult) {
-      gameResult = baccaratGame.playFixedGame(fixedGameResult);
-      fixedGameResult = null;
-    } else {
-      gameResult = baccaratGame.playGame();
-    }
-
-    const processedGameResult = {
-      ...gameResult,
-      stats: currentBettingStats,
-      totalBets: currentBets.reduce((sum, bet) => sum + bet.amount, 0),
-      playerCount: new Set(currentBets.map((bet) => bet.userId)).size,
-    };
-
-    sendCardsToUserHtml(gameResult, async () => {
-      io.emit("game_result", {
-        result: gameResult.result,
-        playerScore: gameResult.playerScore,
-        bankerScore: gameResult.bankerScore,
-        playerPairOccurred: gameResult.playerPairOccurred,
-        bankerPairOccurred: gameResult.bankerPairOccurred,
-        timestamp: gameResult.timestamp,
-      });
-
-      io.emit("game_result_with_cards", {
-        ...gameResult,
-        deckInfo: baccaratGame.getDeckInfo(),
-      });
-
-      setTimeout(async () => {
-        await processAutoUserGameResult(processedGameResult);
-        
-        autoUserGameState.gameCount++;
-
-        // 게임이 계속 활성화되어 있다면 다음 게임 스케줄
-        if (autoUserGameState.isActive) {
-          autoUserGameState.gameTimer = setTimeout(() => {
-            if (autoUserGameState.isActive) {
-              startAutoUserBetting();
-            }
-          }, 3000);
-        }
-      }, 5000);
-    });
-  }
-
-  // 사용자 접속 기반 자동 게임 결과 처리
-  async function processAutoUserGameResult(processedGameResult) {
-    if (resultProcessing) return;
-    resultProcessing = true;
-
-    try {
-      const game = new Game({
-        result: processedGameResult.result,
-        playerPairOccurred: processedGameResult.playerPairOccurred || false,
-        bankerPairOccurred: processedGameResult.bankerPairOccurred || false,
-        stats: processedGameResult.stats,
-        totalBets: processedGameResult.totalBets,
-        playerCount: processedGameResult.playerCount,
-        date: new Date(processedGameResult.timestamp),
-      });
-      await game.save();
-
-      // 베팅 처리 로직 (관리자 게임과 동일하게 합산 처리)
-      const userTotalBets = {};
-      currentBets.forEach((bet) => {
-        if (!userTotalBets[bet.userId]) {
-          userTotalBets[bet.userId] = {};
-        }
-        if (!userTotalBets[bet.userId][bet.choice]) {
-          userTotalBets[bet.userId][bet.choice] = 0;
-        }
-        userTotalBets[bet.userId][bet.choice] += bet.amount;
-      });
-
-      if (currentBets.length > 0) {
-        for (const bet of currentBets) {
-          try {
-            const user = await User.findById(bet.userId);
-            if (!user) continue;
-
-            let finalWinnings = 0;
-            let finalOutcome = "lose";
-
-            if (
-              bet.choice === "player" &&
-              processedGameResult.result === "player"
-            ) {
-              finalWinnings = bet.amount * 2;
-              finalOutcome = "win";
-            } else if (
-              bet.choice === "banker" &&
-              processedGameResult.result === "banker"
-            ) {
-              finalWinnings = bet.amount * 1.95;
-              finalOutcome = "win";
-            } else if (
-              bet.choice === "tie" &&
-              processedGameResult.result === "tie"
-            ) {
-              finalWinnings = bet.amount * 9;
-              finalOutcome = "win";
-            } else if (
-              bet.choice === "player_pair" &&
-              processedGameResult.playerPairOccurred
-            ) {
-              finalWinnings = bet.amount * 12;
-              finalOutcome = "win";
-            } else if (
-              bet.choice === "banker_pair" &&
-              processedGameResult.bankerPairOccurred
-            ) {
-              finalWinnings = bet.amount * 12;
-              finalOutcome = "win";
-            } else if (
-              (bet.choice === "player" || bet.choice === "banker") &&
-              processedGameResult.result === "tie"
-            ) {
-              finalWinnings = bet.amount;
-              finalOutcome = "draw";
-            }
-
-            user.balance += finalWinnings;
-            user.bettingHistory.push({
-              choice: bet.choice,
-              amount: bet.amount,
-              result: finalOutcome,
-              gameResult: processedGameResult.result,
-              date: new Date(),
-            });
-            await user.save();
-          } catch (err) {
-            console.error("Auto user game bet processing error:", err);
-          }
-        }
-      }
-
-      // 승리 알림 (사용자별+선택별로 합산해서 한 번만 알림)
-      const notifiedUsers = new Set();
-      for (const bet of currentBets) {
-        try {
-          const userId = bet.userId.toString();
-          if (notifiedUsers.has(userId + bet.choice)) continue;
-
-          let finalOutcome = "lose";
-          let totalWinnings = 0;
-          const userTotalBetAmount = userTotalBets[bet.userId]
-            ? userTotalBets[bet.userId][bet.choice]
-            : 0;
-
-          if (bet.choice === "player") {
-            if (processedGameResult.result === "player") {
-              totalWinnings = userTotalBetAmount * 2;
-              finalOutcome = "win";
-            } else if (processedGameResult.result === "tie") {
-              totalWinnings = userTotalBetAmount;
-              finalOutcome = "draw";
-            }
-          } else if (bet.choice === "banker") {
-            if (processedGameResult.result === "banker") {
-              totalWinnings = userTotalBetAmount * 1.95;
-              finalOutcome = "win";
-            } else if (processedGameResult.result === "tie") {
-              totalWinnings = userTotalBetAmount;
-              finalOutcome = "draw";
-            }
-          } else if (bet.choice === "tie") {
-            if (processedGameResult.result === "tie") {
-              totalWinnings = userTotalBetAmount * 9;
-              finalOutcome = "win";
-            }
-          } else if (bet.choice === "player_pair") {
-            if (processedGameResult.playerPairOccurred) {
-              totalWinnings = userTotalBetAmount * 12;
-              finalOutcome = "win";
-            }
-          } else if (bet.choice === "banker_pair") {
-            if (processedGameResult.bankerPairOccurred) {
-              totalWinnings = userTotalBetAmount * 12;
-              finalOutcome = "win";
-            }
-          }
-
-          if (finalOutcome === "win") {
-            const userSocket = userSockets.get(userId);
-            if (userSocket) {
-              userSocket.emit("you_won", {
-                choice: bet.choice,
-                totalBetAmount: userTotalBetAmount,
-                winnings: totalWinnings,
-                gameResult: processedGameResult.result,
-              });
-              notifiedUsers.add(userId + bet.choice);
-            }
-          }
-        } catch (err) {
-          console.error("Win notification error:", err);
-        }
-      }
-
-      await updateAndBroadcastLeaderboard();
-      currentBets = [];
-      currentBettingStats = {
-        player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
-        player_pair: {
-          count: 0,
-          total: 0,
-          bettor_count: 0,
-          total_bet_amount: 0,
-        },
-        banker_pair: {
-          count: 0,
-          total: 0,
-          bettor_count: 0,
-          total_bet_amount: 0,
-        },
-      };
-
-      // 게임 상태 업데이트
-      updateGameState('waiting');
-
-      io.emit("result_approved");
-      io.emit("update_coins");
-      io.emit("betting_status", { active: false, stats: currentBettingStats });
-    } catch (err) {
-      console.error("Auto user game result processing error:", err);
-    } finally {
-      resultProcessing = false;
-    }
-  }
+  // 사용자 접속 기반 자동 게임 결과 처리 함수 제거됨 - 관리자만 게임 제어 가능
 
   // 사용자 세션 저장 함수
   function saveUserSession(userId, sessionData) {
@@ -2145,6 +1553,28 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       remainingGames: 0,
       reason: null
     });
+  }
+
+  // 관리자들에게 게임 상태 브로드캐스트
+  function broadcastGameStatus() {
+    // 관리자 권한을 가진 사용자들에게만 상태 전송
+    for (const [userId, socket] of userSockets.entries()) {
+      // 사용자 정보를 캐시에서 확인하거나 DB에서 조회
+      User.findById(userId)
+        .select("role")
+        .then((user) => {
+          if (user && (user.role === "admin" || user.role === "superadmin")) {
+            socket.emit("game_status_update", {
+              bettingActive: bettingActive,
+              backgroundGameActive: backgroundGameState.isActive,
+              adminAutoGameActive: adminAutoGameState.isActive,
+            });
+          }
+        })
+        .catch((err) => {
+          // 에러 무시 (사용자가 없을 수 있음)
+        });
+    }
   }
 
   return { userSockets };
