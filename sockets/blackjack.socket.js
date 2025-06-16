@@ -820,6 +820,10 @@ class BlackjackSocket {
       return;
     }
 
+    // 플레이어 블랙잭 여부 정확히 체크
+    const playerValue = this.blackjackService.calculateHandValue(session.playerHand);
+    const playerBlackjack = playerValue === 21 && session.playerHand.length === 2;
+
     // 딜러 블랙잭 체크
     const dealerBlackjackResult = this.blackjackService.checkDealerBlackjack(session);
 
@@ -843,15 +847,28 @@ class BlackjackSocket {
     } else {
       // 딜러 블랙잭이 아닌 경우
       // 플레이어 블랙잭이었다면 즉시 승리 처리
-      if (session.playerBlackjack) {
+      if (playerBlackjack) {
         session.status = "finished";
         session.gameEndTime = new Date();
         const payout = Math.floor(session.currentBet * 2.5);
-        session.handResults.push({ result: "blackjack", payout });
+        session.handResults = [{ result: "blackjack", payout }];
         session.totalPayout = payout;
         session.balance += payout;
 
-        this.finishGame(userId);
+        try {
+          playerSocket.emit("player_blackjack_win", {
+            message: "플레이어 블랙잭 승리!",
+            payout: payout,
+            session: this.blackjackService.getSessionData(session),
+          });
+        } catch (error) {
+          console.error(`[BlackjackSocket] 플레이어 블랙잭 승리 알림 전송 오류:`, error);
+        }
+
+        // 게임 종료 처리
+        setTimeout(() => {
+          this.finishGame(userId);
+        }, 1500);
       } else {
         // 일반적인 딜러 턴 계속 진행
         this.continueDealerTurn(userId);
