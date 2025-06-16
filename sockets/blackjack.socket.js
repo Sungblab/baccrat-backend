@@ -1113,13 +1113,10 @@ class BlackjackSocket {
         console.error(`[BlackjackSocket] 잔액 업데이트 오류:`, balanceError);
       }
 
-      // 게임 저장 완료 후 다음 게임을 위한 세션 초기화
-      this.blackjackService.prepareForNextGame(session);
-
       const playerSocket = this.playerSockets.get(userId);
       if (playerSocket && playerSocket.connected) {
         try {
-          // 게임 종료 결과 전송
+          // 게임 종료 결과 전송 (세션 초기화 전에)
           playerSocket.emit("game_finished", {
             success: true,
             session: this.blackjackService.getSessionData(session),
@@ -1147,6 +1144,9 @@ class BlackjackSocket {
           session.status = "waiting";
         }
       }
+
+      // 게임 종료 결과 전송 후 다음 게임을 위한 세션 초기화
+      this.blackjackService.prepareForNextGame(session);
     } catch (error) {
       console.error(`[BlackjackSocket] 게임 종료 처리 오류:`, error);
 

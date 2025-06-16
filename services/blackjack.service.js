@@ -385,31 +385,8 @@ class BlackjackService {
       session.isDoubled = false; // 더블다운 플래그 해제
     }
 
-    // 21이면 자동 스탠드 (별도 처리)
-    if (handValue === 21) {
-      if (session.isSplit) {
-        // 스플릿에서 21인 경우
-        return this.finishCurrentSplitHandWithResult(
-          session,
-          "stand",
-          handValue,
-          newCard
-        );
-      } else {
-        // 일반 게임에서 21인 경우 - 딜러 턴으로 넘어가기
-        session.status = "dealer-turn";
-        this.dealerPlay(session);
-
-        return {
-          success: true,
-          message: "21! 자동 스탠드하여 딜러 턴을 진행합니다.",
-          newCard,
-          handValue,
-          session: this.getSessionData(session),
-          autoStand: true, // 자동 스탠드 플래그
-        };
-      }
-    }
+    // 21이 되어도 플레이어가 직접 스탠드하도록 변경
+    // 자동 스탠드 로직 제거 - 사용자가 수동으로 선택
 
     if (handValue > 21) {
       // 버스트 처리
@@ -830,6 +807,9 @@ class BlackjackService {
       } else {
         result = "push";
         payout = session.currentBet; // 베팅액 반환
+        console.log(
+          `[BlackjackService] 무승부 처리 - 사용자: ${session.username}, 베팅액: ${session.currentBet}, 환급액: ${payout}, 플레이어점수: ${playerValue}, 딜러점수: ${dealerValue}`
+        );
       }
 
       const handResult = {
@@ -842,12 +822,21 @@ class BlackjackService {
       session.handResults.push(handResult);
       gameResults.push(handResult);
       session.totalPayout += payout;
+
+      console.log(
+        `[BlackjackService] 핸드 결과 추가 - 결과: ${result}, 환급액: ${payout}, 총 환급액: ${session.totalPayout}`
+      );
     }
 
-    // 잔고 업데이트
+    // 잔고 업데이트 (totalPayout이 이미 올바른 환급액을 포함)
+    const balanceBeforePayout = session.balance;
     session.balance += session.totalPayout;
     session.status = "finished";
     session.gameEndTime = new Date();
+
+    console.log(
+      `[BlackjackService] 게임 결과 - 사용자: ${session.username}, 베팅액: ${session.currentBet}, 총 환급액: ${session.totalPayout}, 환급 전 잔액: ${balanceBeforePayout}, 새 잔액: ${session.balance}`
+    );
 
     // gameStartTime이 null인 경우 현재 시간으로 설정 (오류 방지)
     if (!session.gameStartTime) {
