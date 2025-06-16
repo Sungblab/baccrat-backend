@@ -1003,6 +1003,12 @@ class BlackjackSocket {
         return;
       }
 
+      // 업데이트된 잔액을 미리 저장 (prepareForNextGame 호출 전에)
+      const updatedBalance = session.balance;
+      console.log(
+        `[BlackjackSocket] 게임 완료 후 최종 잔액: ${updatedBalance}`
+      );
+
       // 게임 결과를 데이터베이스에 저장 (세션 초기화 전에)
       try {
         await this.saveGameToDatabase(session, handResults, insuranceResult);
@@ -1011,14 +1017,14 @@ class BlackjackSocket {
         // 저장 오류가 있어도 게임은 계속 진행
       }
 
-      // 사용자 잔액을 DB에 업데이트
+      // 사용자 잔액을 DB에 업데이트 (저장된 잔액 사용)
       try {
         const user = await User.findById(userId);
         if (user) {
           console.log(
-            `[BlackjackSocket] DB 잔액 업데이트: userId: ${userId}, 기존 DB 잔액: ${user.balance}, 새 잔액: ${session.balance}`
+            `[BlackjackSocket] DB 잔액 업데이트: userId: ${userId}, 기존 DB 잔액: ${user.balance}, 새 잔액: ${updatedBalance}`
           );
-          user.balance = session.balance;
+          user.balance = updatedBalance;
           await user.save();
           console.log(
             `[BlackjackSocket] DB 잔액 업데이트 완료: ${user.balance}`
@@ -1046,9 +1052,9 @@ class BlackjackSocket {
             message: "게임이 완료되었습니다.",
           });
 
-          // 잔액 업데이트 알림
+          // 잔액 업데이트 알림 (저장된 잔액 사용)
           playerSocket.emit("balance_updated", {
-            balance: session.balance,
+            balance: updatedBalance,
           });
 
           // 게임 종료 후 즉시 상태를 waiting으로 변경
