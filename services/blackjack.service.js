@@ -233,7 +233,7 @@ class BlackjackService {
     // 보험 가능 여부 (딜러 업카드가 A)
     session.canInsurance =
       dealerUpCard.value === "A" &&
-      session.balance >= Math.floor(session.currentBet / 2);
+      session.balance >= Math.round(session.currentBet / 2);
 
     // 블랙잭 체크를 위한 정보 추가
     session.playerValue = playerValue;
@@ -287,7 +287,7 @@ class BlackjackService {
       session.gameEndTime = new Date();
 
       if (playerBlackjack && dealerBlackjack) {
-        // 둘 다 블랙잭 - 푸시
+        // 둘 다 블랙잭 - 푸시 (베팅액 반환)
         session.handResults.push({
           result: "push",
           payout: session.currentBet,
@@ -460,7 +460,7 @@ class BlackjackService {
       return { success: false, message: "보험을 걸 수 있는 상태가 아닙니다." };
     }
 
-    const insuranceAmount = Math.floor(session.currentBet / 2);
+    const insuranceAmount = Math.round(session.currentBet / 2);
     if (session.balance < insuranceAmount) {
       return { success: false, message: "보험을 위한 잔고가 부족합니다." };
     }
@@ -571,13 +571,13 @@ class BlackjackService {
           payout = 0;
         } else if (dealerBusted || handValue > dealerValue) {
           result = "win";
-          payout = session.currentBet; // 스플릿에서는 각 핸드당 원래 베팅액
+          payout = session.currentBet * 2; // 스플릿에서도 베팅액 + 승리금 = 2배 지급
         } else if (handValue < dealerValue) {
           result = "lose";
           payout = 0;
         } else {
           result = "push";
-          payout = session.currentBet / 2; // 스플릿에서는 절반씩
+          payout = session.currentBet; // 무승부 시 베팅액 그대로 반환
         }
 
         const handResult = { result, payout, handValue, hand };
@@ -600,7 +600,7 @@ class BlackjackService {
         payout = Math.floor(session.currentBet * 2.5); // 블랙잭은 3:2 배당
       } else if (dealerBusted || playerValue > dealerValue) {
         result = "win";
-        payout = session.currentBet * 2; // 원래 베팅액의 2배
+        payout = session.currentBet * 2; // 베팅액 + 승리금 = 총 2배 지급
       } else if (playerValue < dealerValue) {
         result = "lose";
         payout = 0;
