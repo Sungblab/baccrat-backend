@@ -306,8 +306,9 @@ class BlackjackService {
   // 딜러 블랙잭 체크 (딜러 턴에서만 호출)
   checkDealerBlackjack(session) {
     const dealerValue = this.calculateHandValue(session.dealerHand);
-    const dealerBlackjack = dealerValue === 21 && session.dealerHand.length === 2;
-    
+    const dealerBlackjack =
+      dealerValue === 21 && session.dealerHand.length === 2;
+
     if (dealerBlackjack) {
       session.dealerBlackjack = true;
       session.status = "finished";
@@ -388,7 +389,12 @@ class BlackjackService {
     if (handValue === 21) {
       if (session.isSplit) {
         // 스플릿에서 21인 경우
-        return this.finishCurrentSplitHandWithResult(session, "stand", handValue, newCard);
+        return this.finishCurrentSplitHandWithResult(
+          session,
+          "stand",
+          handValue,
+          newCard
+        );
       } else {
         // 일반 게임에서 21인 경우 - 딜러 턴으로 넘어가기
         session.status = "dealer-turn";
@@ -409,7 +415,12 @@ class BlackjackService {
       // 버스트 처리
       if (session.isSplit) {
         // 스플릿 중인 경우 현재 핸드만 버스트
-        return this.finishCurrentSplitHandWithResult(session, "bust", handValue, newCard);
+        return this.finishCurrentSplitHandWithResult(
+          session,
+          "bust",
+          handValue,
+          newCard
+        );
       } else {
         // 일반 게임에서 버스트 - 즉시 게임 종료
         session.status = "finished";
@@ -436,7 +447,12 @@ class BlackjackService {
       setTimeout(() => {
         if (session.isSplit) {
           // 스플릿에서 더블다운 후에는 현재 핸드 완료
-          this.finishCurrentSplitHandWithResult(session, "stand", handValue, newCard);
+          this.finishCurrentSplitHandWithResult(
+            session,
+            "stand",
+            handValue,
+            newCard
+          );
         } else {
           session.status = "dealer-turn";
           this.dealerPlay(session);
@@ -446,7 +462,9 @@ class BlackjackService {
 
     return {
       success: true,
-      message: wasDoubled ? "더블다운으로 카드 1장 받았습니다. 자동 스탠드!" : "카드를 받았습니다.",
+      message: wasDoubled
+        ? "더블다운으로 카드 1장 받았습니다. 자동 스탠드!"
+        : "카드를 받았습니다.",
       newCard,
       handValue,
       session: this.getSessionData(session),
@@ -473,7 +491,7 @@ class BlackjackService {
       // 스플릿 상태에서 스탠드
       const currentHand = session.splitHands[session.currentHandIndex];
       const handValue = this.calculateHandValue(currentHand);
-      
+
       // 현재 핸드 완료 처리
       session.handResults[session.currentHandIndex] = {
         result: "stand",
@@ -498,7 +516,7 @@ class BlackjackService {
       } else {
         // 다음 핸드로 이동
         session.playerHand = [...session.splitHands[session.currentHandIndex]];
-        
+
         return {
           success: true,
           message: `핸드 ${session.currentHandIndex}번 스탠드! 다음 핸드로 이동합니다.`,
@@ -542,7 +560,7 @@ class BlackjackService {
     session.lastActivity = new Date();
 
     // 더블다운 후에는 히트 한 번만 가능, 스플릿/보험 불가
-    session.canHit = true;  // 히트 한 번은 가능
+    session.canHit = true; // 히트 한 번은 가능
     session.canStand = true; // 스탠드도 가능 (카드 받지 않고 스탠드 가능)
     session.canSplit = false;
     session.canInsurance = false;
@@ -577,7 +595,8 @@ class BlackjackService {
 
     // 보험료 계산 (베팅액의 절반이 최대)
     const maxInsuranceAmount = Math.floor(session.currentBet / 2);
-    const insuranceAmount = amount && amount <= maxInsuranceAmount ? amount : maxInsuranceAmount;
+    const insuranceAmount =
+      amount && amount <= maxInsuranceAmount ? amount : maxInsuranceAmount;
 
     if (session.balance < insuranceAmount) {
       return { success: false, message: "보험을 위한 잔고가 부족합니다." };
@@ -646,7 +665,7 @@ class BlackjackService {
     // 게임 결과 저장
     session.handResults.push({
       result: "surrender",
-      payout: surrenderAmount, // 반환받은 금액 
+      payout: surrenderAmount, // 반환받은 금액
       originalBet: session.currentBet,
       lossAmount: session.currentBet - surrenderAmount, // 실제 잃은 금액
       playerValue: this.calculateHandValue(session.playerHand),
@@ -743,7 +762,7 @@ class BlackjackService {
           won: true,
           amount: session.insuranceBet,
           payout: insurancePayout,
-          message: "보험 승리! 딜러 블랙잭으로 보험금 지급"
+          message: "보험 승리! 딜러 블랙잭으로 보험금 지급",
         };
       } else {
         // 보험 패배: 보험료 손실
@@ -751,7 +770,7 @@ class BlackjackService {
           won: false,
           amount: session.insuranceBet,
           payout: 0,
-          message: "보험 패배! 딜러가 블랙잭이 아닙니다"
+          message: "보험 패배! 딜러가 블랙잭이 아닙니다",
         };
       }
     }
@@ -798,7 +817,10 @@ class BlackjackService {
         payout = 0;
       } else if (playerBlackjack && !dealerBlackjack) {
         result = "blackjack";
-        payout = Math.floor(session.currentBet * 2.5); // 블랙잭은 3:2 배당
+        payout = session.currentBet + Math.floor(session.currentBet * 1.5); // 블랙잭은 베팅액 + (베팅액 × 1.5)
+        console.log(
+          `[BlackjackService] 블랙잭 결과 계산: bet: ${session.currentBet}, payout: ${payout}`
+        );
       } else if (dealerBusted || playerValue > dealerValue) {
         result = "win";
         payout = session.currentBet * 2; // 베팅액 + 승리금 = 총 2배 지급
@@ -840,7 +862,7 @@ class BlackjackService {
       handResults: gameResults,
       insuranceResult: insuranceResult,
       totalPayout: session.totalPayout,
-      finalBalance: session.balance
+      finalBalance: session.balance,
     };
   }
 
@@ -908,7 +930,7 @@ class BlackjackService {
   // 스플릿 핸드 완료 처리 (결과와 함께)
   finishCurrentSplitHandWithResult(session, result, handValue, lastCard) {
     const currentHand = session.splitHands[session.currentHandIndex];
-    
+
     // 결과 저장 (임시)
     session.handResults[session.currentHandIndex] = {
       result,
@@ -926,7 +948,10 @@ class BlackjackService {
 
       return {
         success: true,
-        message: result === "bust" ? "버스트! 모든 핸드 완료, 딜러 턴으로 진행합니다." : "모든 핸드 완료, 딜러 턴으로 진행합니다.",
+        message:
+          result === "bust"
+            ? "버스트! 모든 핸드 완료, 딜러 턴으로 진행합니다."
+            : "모든 핸드 완료, 딜러 턴으로 진행합니다.",
         newCard: lastCard,
         handValue,
         session: this.getSessionData(session),
@@ -936,10 +961,13 @@ class BlackjackService {
     } else {
       // 다음 핸드로 이동
       session.playerHand = [...session.splitHands[session.currentHandIndex]];
-      
+
       return {
         success: true,
-        message: result === "bust" ? "버스트! 다음 핸드로 이동합니다." : "다음 핸드로 이동합니다.",
+        message:
+          result === "bust"
+            ? "버스트! 다음 핸드로 이동합니다."
+            : "다음 핸드로 이동합니다.",
         newCard: lastCard,
         handValue,
         session: this.getSessionData(session),

@@ -357,7 +357,10 @@ class BlackjackSocket {
         }
 
         // 모든 핸드가 완료되거나 더블다운 후 딜러 턴 자동 시작
-        if ((result.allHandsComplete || (result.wasDoubled && !result.isBust)) && result.session.status === "dealer-turn") {
+        if (
+          (result.allHandsComplete || (result.wasDoubled && !result.isBust)) &&
+          result.session.status === "dealer-turn"
+        ) {
           setTimeout(() => {
             this.processDealerTurn(socket.userId);
           }, 1500);
@@ -783,8 +786,10 @@ class BlackjackSocket {
       const hiddenCard = session.dealerHand[0];
 
       try {
-        const dealerValue = this.blackjackService.calculateHandValue(session.dealerHand);
-        
+        const dealerValue = this.blackjackService.calculateHandValue(
+          session.dealerHand
+        );
+
         playerSocket.emit("dealer_hidden_card_revealed", {
           hiddenCard: {
             value: hiddenCard.value,
@@ -821,11 +826,15 @@ class BlackjackSocket {
     }
 
     // 플레이어 블랙잭 여부 정확히 체크
-    const playerValue = this.blackjackService.calculateHandValue(session.playerHand);
-    const playerBlackjack = playerValue === 21 && session.playerHand.length === 2;
+    const playerValue = this.blackjackService.calculateHandValue(
+      session.playerHand
+    );
+    const playerBlackjack =
+      playerValue === 21 && session.playerHand.length === 2;
 
     // 딜러 블랙잭 체크
-    const dealerBlackjackResult = this.blackjackService.checkDealerBlackjack(session);
+    const dealerBlackjackResult =
+      this.blackjackService.checkDealerBlackjack(session);
 
     if (dealerBlackjackResult.isDealerBlackjack) {
       // 딜러 블랙잭인 경우
@@ -850,7 +859,15 @@ class BlackjackSocket {
       if (playerBlackjack) {
         session.status = "finished";
         session.gameEndTime = new Date();
-        const payout = Math.floor(session.currentBet * 2.5);
+        const payout =
+          session.currentBet + Math.floor(session.currentBet * 1.5);
+        console.log(
+          `[BlackjackSocket] 플레이어 블랙잭 승리! userId: ${userId}, bet: ${
+            session.currentBet
+          }, payout: ${payout}, 기존잔액: ${session.balance}, 새잔액: ${
+            session.balance + payout
+          }`
+        );
         session.handResults = [{ result: "blackjack", payout }];
         session.totalPayout = payout;
         session.balance += payout;
@@ -862,7 +879,10 @@ class BlackjackSocket {
             session: this.blackjackService.getSessionData(session),
           });
         } catch (error) {
-          console.error(`[BlackjackSocket] 플레이어 블랙잭 승리 알림 전송 오류:`, error);
+          console.error(
+            `[BlackjackSocket] 플레이어 블랙잭 승리 알림 전송 오류:`,
+            error
+          );
         }
 
         // 게임 종료 처리
@@ -995,8 +1015,16 @@ class BlackjackSocket {
       try {
         const user = await User.findById(userId);
         if (user) {
+          console.log(
+            `[BlackjackSocket] DB 잔액 업데이트: userId: ${userId}, 기존 DB 잔액: ${user.balance}, 새 잔액: ${session.balance}`
+          );
           user.balance = session.balance;
           await user.save();
+          console.log(
+            `[BlackjackSocket] DB 잔액 업데이트 완료: ${user.balance}`
+          );
+        } else {
+          console.error(`[BlackjackSocket] 사용자를 찾을 수 없음: ${userId}`);
         }
       } catch (balanceError) {
         console.error(`[BlackjackSocket] 잔액 업데이트 오류:`, balanceError);
