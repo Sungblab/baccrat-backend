@@ -872,6 +872,37 @@ class BlackjackSocket {
         session.totalPayout = payout;
         session.balance += payout;
 
+        // 즉시 DB 업데이트 수행 (블랙잭 승리 시)
+        User.findById(userId)
+          .then((user) => {
+            if (user) {
+              console.log(
+                `[BlackjackSocket] 블랙잭 승리 - 즉시 DB 잔액 업데이트: userId: ${userId}, 기존 DB 잔액: ${user.balance}, 새 잔액: ${session.balance}`
+              );
+              user.balance = session.balance;
+              return user.save();
+            }
+          })
+          .then((savedUser) => {
+            if (savedUser) {
+              console.log(
+                `[BlackjackSocket] 블랙잭 승리 - DB 잔액 업데이트 완료: ${savedUser.balance}`
+              );
+              session.dbSaved = true; // DB 저장 완료 플래그 설정
+
+              // 클라이언트에 잔액 업데이트 알림
+              playerSocket.emit("balance_updated", {
+                balance: session.balance,
+              });
+            }
+          })
+          .catch((balanceError) => {
+            console.error(
+              `[BlackjackSocket] 블랙잭 승리 시 잔액 업데이트 오류:`,
+              balanceError
+            );
+          });
+
         try {
           playerSocket.emit("player_blackjack_win", {
             message: "플레이어 블랙잭 승리!",
@@ -885,7 +916,7 @@ class BlackjackSocket {
           );
         }
 
-        // 게임 종료 처리
+        // 게임 종료 처리 (DB는 이미 저장되었으므로)
         setTimeout(() => {
           this.finishGame(userId);
         }, 1500);
@@ -985,8 +1016,11 @@ class BlackjackSocket {
       return;
     }
 
-    // 이미 종료된 게임인지 확인
-    if (session.status === "finished") {
+    // 이미 종료된 게임인지 확인 (단, 블랙잭 승리 시에는 DB 저장이 필요하므로 처리 허용)
+    if (session.status === "finished" && session.dbSaved) {
+      console.log(
+        `[BlackjackSocket] 게임이 이미 완료되고 DB 저장도 완료됨: ${userId}`
+      );
       return;
     }
 
@@ -1029,6 +1063,8 @@ class BlackjackSocket {
           console.log(
             `[BlackjackSocket] DB 잔액 업데이트 완료: ${user.balance}`
           );
+          // DB 저장 완료 플래그 설정
+          session.dbSaved = true;
         } else {
           console.error(`[BlackjackSocket] 사용자를 찾을 수 없음: ${userId}`);
         }
