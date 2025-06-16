@@ -375,6 +375,12 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
   // 베팅 시작 트리거 함수
   function triggerBettingStart() {
+    // 이미 베팅이 진행 중이거나 결과 처리 중이면 중단
+    if (bettingActive || resultProcessing) {
+      console.log('베팅 시작 요청 무시: 이미 베팅 진행 중이거나 결과 처리 중 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
+      return;
+    }
+
     const bettingDuration = 16;
     const endTime = new Date(Date.now() + bettingDuration * 1000);
     bettingActive = true;
@@ -1126,14 +1132,26 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
       }
 
-      // 첫 번째 사용자가 접속하고 게임이 비활성화 상태면 시작
-      // 단, 베팅이 진행 중이거나 결과 처리 중이면 새 게임을 시작하지 않음
-      if (!autoUserGameState.isActive && !adminAutoGameState.isActive && !backgroundGameState.isActive 
-          && !bettingActive && !resultProcessing) {
+      // 첫 번째 사용자가 접속하고 모든 게임이 비활성화 상태일 때만 시작
+      // 베팅이 진행 중이거나 결과 처리 중이면 절대 새 게임을 시작하지 않음
+      const canStartNewGame = !autoUserGameState.isActive && 
+                              !adminAutoGameState.isActive && 
+                              !backgroundGameState.isActive && 
+                              !bettingActive && 
+                              !resultProcessing &&
+                              autoUserGameState.connectedUsers.size === 1; // 정확히 첫 번째 사용자일 때만
+      
+      if (canStartNewGame) {
         console.log('첫 번째 사용자 접속으로 자동 게임 시작');
         startAutoUserGame();
-      } else if (bettingActive || resultProcessing) {
-        console.log('게임 진행 중이므로 새로운 자동 게임을 시작하지 않음');
+      } else {
+        if (bettingActive || resultProcessing) {
+          console.log('게임 진행 중이므로 새로운 자동 게임을 시작하지 않음 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
+        } else if (autoUserGameState.isActive || adminAutoGameState.isActive || backgroundGameState.isActive) {
+          console.log('다른 게임이 이미 활성화되어 있음 (자동:', autoUserGameState.isActive, ', 관리자:', adminAutoGameState.isActive, ', 백그라운드:', backgroundGameState.isActive, ')');
+        } else {
+          console.log('게임 시작 조건 불충족 (접속자 수:', autoUserGameState.connectedUsers.size, ')');
+        }
       }
 
       // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
@@ -1703,7 +1721,17 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
   // 사용자 접속 기반 자동 게임 시작 함수 (백그라운드 방식으로 변경)
   function startAutoUserGame() {
-    if (autoUserGameState.isActive || backgroundGameState.isActive) return;
+    // 중복 실행 방지 - 더 엄격한 조건 검사
+    if (autoUserGameState.isActive || backgroundGameState.isActive || adminAutoGameState.isActive) {
+      console.log('이미 다른 게임이 활성화되어 있음. 자동 게임 시작 취소');
+      return;
+    }
+
+    // 베팅이나 결과 처리 중이면 게임 시작 금지
+    if (bettingActive || resultProcessing) {
+      console.log('베팅 또는 결과 처리 중이므로 자동 게임 시작 취소 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
+      return;
+    }
 
     // 기존 관리자 자동 베팅이 활성화되어 있으면 중지
     if (adminAutoGameState.isActive) {
@@ -1714,16 +1742,18 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     autoUserGameState.isManualStop = false;
     autoUserGameState.gameCount = 0;
 
-    console.log('사용자 기반 자동 게임 시작됨');
+    console.log('사용자 기반 자동 게임 시작됨 (접속자:', autoUserGameState.connectedUsers.size, '명)');
 
-    // 베팅이 진행 중이 아니라면 바로 시작
-    if (!bettingActive && !resultProcessing) {
-      setTimeout(() => {
-        if (autoUserGameState.isActive) {
-          startAutoUserBetting();
-        }
-      }, 1000);
-    }
+    // 안전한 지연 후 베팅 시작
+    setTimeout(() => {
+      // 다시 한 번 상태 확인
+      if (autoUserGameState.isActive && !bettingActive && !resultProcessing) {
+        startAutoUserBetting();
+      } else {
+        console.log('게임 시작 조건이 변경되어 베팅 시작 취소');
+        autoUserGameState.isActive = false;
+      }
+    }, 1000);
   }
 
   // 사용자 접속 기반 자동 게임 중지 함수 (수동 중지 또는 사용자 없을 때)
@@ -1781,7 +1811,16 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
   // 사용자 접속 기반 자동 베팅 시작 (백그라운드 방식)
   function startAutoUserBetting() {
-    if (!autoUserGameState.isActive) return;
+    if (!autoUserGameState.isActive) {
+      console.log('자동 게임이 비활성화되어 베팅 시작 취소');
+      return;
+    }
+
+    // 이미 베팅이 진행 중이거나 결과 처리 중이면 중단
+    if (bettingActive || resultProcessing) {
+      console.log('이미 베팅 진행 중이거나 결과 처리 중이므로 베팅 시작 취소 (베팅:', bettingActive, ', 결과처리:', resultProcessing, ')');
+      return;
+    }
 
     const bettingDuration = 16;
     const endTime = new Date(Date.now() + bettingDuration * 1000);
