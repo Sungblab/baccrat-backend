@@ -321,19 +321,29 @@ class BlackjackSocket {
       const result = this.blackjackService.hit(socket.userId);
 
       if (result.success) {
-        socket.emit("hit_result", {
-          success: true,
-          newCard: result.newCard,
-          handValue: result.handValue,
-          message: result.message,
-          session: result.session,
-          isBust: result.isBust || false,
-          wasDoubled: result.wasDoubled || false,
-          isSplit: result.isSplit || false,
-          currentHandIndex: result.currentHandIndex || 0,
-          nextHandIndex: result.nextHandIndex || null,
-          allHandsComplete: result.allHandsComplete || false,
-        });
+        // 자동 스탠드인 경우 stand_result로 전송
+        if (result.autoStand) {
+          socket.emit("stand_result", {
+            success: true,
+            message: result.message,
+            session: result.session,
+            autoStand: true,
+          });
+        } else {
+          socket.emit("hit_result", {
+            success: true,
+            newCard: result.newCard,
+            handValue: result.handValue,
+            message: result.message,
+            session: result.session,
+            isBust: result.isBust || false,
+            wasDoubled: result.wasDoubled || false,
+            isSplit: result.isSplit || false,
+            currentHandIndex: result.currentHandIndex || 0,
+            nextHandIndex: result.nextHandIndex || null,
+            allHandsComplete: result.allHandsComplete || false,
+          });
+        }
         socket.emit("session_updated", result.session);
 
         // 스플릿에서 다음 핸드로 이동하는 경우
