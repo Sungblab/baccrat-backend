@@ -321,29 +321,20 @@ class BlackjackSocket {
       const result = this.blackjackService.hit(socket.userId);
 
       if (result.success) {
-        // 자동 스탠드인 경우 stand_result로 전송
-        if (result.autoStand) {
-          socket.emit("stand_result", {
-            success: true,
-            message: result.message,
-            session: result.session,
-            autoStand: true,
-          });
-        } else {
-          socket.emit("hit_result", {
-            success: true,
-            newCard: result.newCard,
-            handValue: result.handValue,
-            message: result.message,
-            session: result.session,
-            isBust: result.isBust || false,
-            wasDoubled: result.wasDoubled || false,
-            isSplit: result.isSplit || false,
-            currentHandIndex: result.currentHandIndex || 0,
-            nextHandIndex: result.nextHandIndex || null,
-            allHandsComplete: result.allHandsComplete || false,
-          });
-        }
+        // 자동 스탠드 로직 제거 - 항상 hit_result로 전송
+        socket.emit("hit_result", {
+          success: true,
+          newCard: result.newCard,
+          handValue: result.handValue,
+          message: result.message,
+          session: result.session,
+          isBust: result.isBust || false,
+          wasDoubled: result.wasDoubled || false,
+          isSplit: result.isSplit || false,
+          currentHandIndex: result.currentHandIndex || 0,
+          nextHandIndex: result.nextHandIndex || null,
+          allHandsComplete: result.allHandsComplete || false,
+        });
         socket.emit("session_updated", result.session);
 
         // 스플릿에서 다음 핸드로 이동하는 경우
@@ -1067,6 +1058,12 @@ class BlackjackSocket {
         return; // 중복 처리 방지를 위해 여기서 종료
       }
 
+      // 게임 결과 계산 전 잔액 저장
+      const beforeGameBalance = session.balance;
+      console.log(
+        `[BlackjackSocket] 게임 결과 계산 전 잔액: ${beforeGameBalance}`
+      );
+
       // 게임 결과 계산 (상태 초기화는 나중에 처리)
       const gameResults = this.blackjackService.determineGameResult(session);
 
@@ -1082,7 +1079,9 @@ class BlackjackSocket {
       // 업데이트된 잔액을 미리 저장 (prepareForNextGame 호출 전에)
       const updatedBalance = session.balance;
       console.log(
-        `[BlackjackSocket] 게임 완료 후 최종 잔액: ${updatedBalance}`
+        `[BlackjackSocket] 게임 완료 후 최종 잔액: ${updatedBalance}, 변화: ${
+          updatedBalance - beforeGameBalance
+        }`
       );
 
       // 게임 결과를 데이터베이스에 저장 (세션 초기화 전에)
