@@ -279,7 +279,7 @@ class BlackjackSocket {
       }
     });
 
-    // 블랙잭 체크 요청
+    // 블랙잭 체크 요청 (플레이어 블랙잭만)
     socket.on("check_blackjack", () => {
       if (!socket.isAuthenticated) {
         socket.emit("blackjack_check_result", {
@@ -294,9 +294,14 @@ class BlackjackSocket {
       if (result.success) {
         socket.emit("blackjack_check_result", result);
 
-        if (result.isBlackjack) {
-          // 블랙잭인 경우 게임 종료 처리
-          this.finishGame(socket.userId);
+        if (result.isBlackjack && result.needsDealerCheck) {
+          // 플레이어 블랙잭인 경우 딜러 턴으로 바로 진행
+          setTimeout(() => {
+            this.processDealerTurn(socket.userId);
+          }, 1500);
+        } else if (!result.isBlackjack) {
+          // 플레이어 블랙잭이 아니면 정상 게임 진행
+          // enableGameActions는 클라이언트에서 처리
         }
       } else {
         socket.emit("blackjack_check_result", result);
@@ -323,23 +328,37 @@ class BlackjackSocket {
           message: result.message,
           session: result.session,
           isBust: result.isBust || false,
-          wasDoubled: result.wasDoubled || false, // 더블다운 여부 추가
+          wasDoubled: result.wasDoubled || false,
+          isSplit: result.isSplit || false,
+          currentHandIndex: result.currentHandIndex || 0,
+          nextHandIndex: result.nextHandIndex || null,
+          allHandsComplete: result.allHandsComplete || false,
         });
         socket.emit("session_updated", result.session);
 
-        // 더블다운 후 딜러 턴 자동 시작
-        if (result.wasDoubled && !result.isBust) {
-          const session = this.blackjackService.getGameSession(socket.userId);
-          if (session && session.status === "dealer-turn") {
-            setTimeout(() => {
-              this.processDealerTurn(socket.userId);
-            }, 1500); // 1.5초 후 딜러 턴 시작
-          }
+        // 스플릿에서 다음 핸드로 이동하는 경우
+        if (result.isSplit && result.nextHandIndex !== undefined) {
+          setTimeout(() => {
+            socket.emit("split_next_hand", {
+              nextHandIndex: result.nextHandIndex,
+              session: result.session,
+            });
+          }, 1000);
         }
 
-        // 버스트인 경우 즉시 게임 종료
+        // 모든 핸드가 완료되거나 더블다운 후 딜러 턴 자동 시작
+        if ((result.allHandsComplete || (result.wasDoubled && !result.isBust)) && result.session.status === "dealer-turn") {
+          setTimeout(() => {
+            this.processDealerTurn(socket.userId);
+          }, 1500);
+        }
+
+        // 버스트이거나 게임 종료인 경우
         if (result.isBust || result.session.status === "finished") {
-          this.finishGame(socket.userId);
+          // 스플릿이 아니거나 모든 핸드가 완료된 경우에만 게임 종료
+          if (!result.isSplit || result.allHandsComplete) {
+            this.finishGame(socket.userId);
+          }
         }
       } else {
         socket.emit("action_result", result);
@@ -363,12 +382,23 @@ class BlackjackSocket {
           success: true,
           message: result.message,
           session: result.session,
+          nextHandIndex: result.nextHandIndex || null,
+          allHandsComplete: result.allHandsComplete || false,
         });
         socket.emit("session_updated", result.session);
 
+        // 스플릿에서 다음 핸드로 이동하는 경우
+        if (result.nextHandIndex !== undefined) {
+          setTimeout(() => {
+            socket.emit("split_next_hand", {
+              nextHandIndex: result.nextHandIndex,
+              session: result.session,
+            });
+          }, 1000);
+        }
+
         // 딜러 턴인 경우 딜러 카드를 하나씩 처리
         if (result.session.status === "dealer-turn") {
-          // 약간의 지연 후 딜러 턴 시작 (카드 공개 애니메이션 완료 대기)
           setTimeout(() => {
             this.processDealerTurn(socket.userId);
           }, 1000);
@@ -522,6 +552,58 @@ class BlackjackSocket {
         socket.emit("action_result", {
           success: false,
           message: "스플릿 처리 중 오류가 발생했습니다.",
+        });
+      }
+    });
+
+    // 서렌더 요청
+    socket.on("surrender", async () => {
+      try {
+        if (!socket.isAuthenticated) {
+          socket.emit("action_result", {
+            success: false,
+            message: "인증이 필요합니다.",
+          });
+          return;
+        }
+
+        const user = await User.findById(socket.userId);
+        if (!user) {
+          socket.emit("action_result", {
+            success: false,
+            message: "사용자를 찾을 수 없습니다.",
+          });
+          return;
+        }
+
+        const result = this.blackjackService.surrender(socket.userId);
+
+        if (result.success) {
+          // 서렌더 시 잔액 업데이트 (이미 서비스에서 처리됨)
+          user.balance = result.session.balance;
+          await user.save();
+
+          socket.emit("surrender_result", {
+            success: true,
+            message: result.message,
+            session: result.session,
+            surrenderAmount: result.surrenderAmount,
+            lossAmount: result.lossAmount,
+          });
+          socket.emit("session_updated", result.session);
+
+          // 서렌더 시 게임 즉시 종료
+          setTimeout(() => {
+            this.finishGame(socket.userId);
+          }, 1500);
+        } else {
+          socket.emit("action_result", result);
+        }
+      } catch (error) {
+        console.error("서렌더 처리 오류:", error);
+        socket.emit("action_result", {
+          success: false,
+          message: "서렌더 처리 중 오류가 발생했습니다.",
         });
       }
     });
@@ -691,17 +773,20 @@ class BlackjackSocket {
       const hiddenCard = session.dealerHand[0];
 
       try {
+        const dealerValue = this.blackjackService.calculateHandValue(session.dealerHand);
+        
         playerSocket.emit("dealer_hidden_card_revealed", {
           hiddenCard: {
             value: hiddenCard.value,
             suit: hiddenCard.suit,
           },
+          dealerValue: dealerValue,
           session: this.blackjackService.getSessionData(session),
         });
 
-        // 카드 공개 애니메이션 후 딜러 추가 카드 체크 (1.5초 후)
+        // 카드 공개 후 딜러 블랙잭 체크
         setTimeout(() => {
-          this.continueDealerTurn(userId);
+          this.checkDealerBlackjackAfterReveal(userId);
         }, 1500);
       } catch (error) {
         console.error(`[BlackjackSocket] 딜러 카드 공개 전송 오류:`, error);
@@ -713,6 +798,54 @@ class BlackjackSocket {
     } else {
       console.error(`[BlackjackSocket] 딜러 카드가 없음: ${userId}`);
       this.finalizeDealerTurn(userId);
+    }
+  }
+
+  // 딜러 카드 공개 후 블랙잭 체크
+  checkDealerBlackjackAfterReveal(userId) {
+    const session = this.blackjackService.getGameSession(userId);
+    const playerSocket = this.playerSockets.get(userId);
+
+    if (!session || !playerSocket || !playerSocket.connected) {
+      return;
+    }
+
+    // 딜러 블랙잭 체크
+    const dealerBlackjackResult = this.blackjackService.checkDealerBlackjack(session);
+
+    if (dealerBlackjackResult.isDealerBlackjack) {
+      // 딜러 블랙잭인 경우
+      try {
+        playerSocket.emit("dealer_blackjack", {
+          holeCard: dealerBlackjackResult.holeCard,
+          session: dealerBlackjackResult.session,
+          results: session.handResults,
+        });
+
+        // 게임 즉시 종료
+        setTimeout(() => {
+          this.finishGame(userId);
+        }, 1500);
+      } catch (error) {
+        console.error(`[BlackjackSocket] 딜러 블랙잭 알림 전송 오류:`, error);
+        this.finishGame(userId);
+      }
+    } else {
+      // 딜러 블랙잭이 아닌 경우
+      // 플레이어 블랙잭이었다면 즉시 승리 처리
+      if (session.playerBlackjack) {
+        session.status = "finished";
+        session.gameEndTime = new Date();
+        const payout = Math.floor(session.currentBet * 2.5);
+        session.handResults.push({ result: "blackjack", payout });
+        session.totalPayout = payout;
+        session.balance += payout;
+
+        this.finishGame(userId);
+      } else {
+        // 일반적인 딜러 턴 계속 진행
+        this.continueDealerTurn(userId);
+      }
     }
   }
 
@@ -814,14 +947,18 @@ class BlackjackSocket {
       // 게임 결과 계산 (상태 초기화는 나중에 처리)
       const gameResults = this.blackjackService.determineGameResult(session);
 
-      if (!gameResults || gameResults.length === 0) {
+      // 게임 결과가 객체 형태인지 확인 (보험 결과 포함)
+      const handResults = gameResults.handResults || gameResults;
+      const insuranceResult = gameResults.insuranceResult || null;
+
+      if (!handResults || handResults.length === 0) {
         console.error(`[BlackjackSocket] 게임 결과 계산 실패: ${userId}`);
         return;
       }
 
       // 게임 결과를 데이터베이스에 저장 (세션 초기화 전에)
       try {
-        await this.saveGameToDatabase(session, gameResults);
+        await this.saveGameToDatabase(session, handResults, insuranceResult);
       } catch (saveError) {
         console.error(`[BlackjackSocket] 게임 저장 오류:`, saveError);
         // 저장 오류가 있어도 게임은 계속 진행
@@ -848,7 +985,9 @@ class BlackjackSocket {
           playerSocket.emit("game_finished", {
             success: true,
             session: this.blackjackService.getSessionData(session),
-            results: gameResults,
+            results: handResults,
+            insuranceResult: insuranceResult,
+            totalPayout: gameResults.totalPayout,
             message: "게임이 완료되었습니다.",
           });
 
@@ -895,7 +1034,7 @@ class BlackjackSocket {
   }
 
   // 게임 결과를 데이터베이스에 저장
-  async saveGameToDatabase(session, gameResults) {
+  async saveGameToDatabase(session, handResults, insuranceResult = null) {
     try {
       // gameStartTime 검증 및 보정
       let gameStartTime = session.gameStartTime;
@@ -925,12 +1064,13 @@ class BlackjackSocket {
           cards: session.playerHand,
           score: this.blackjackService.calculateHandValue(session.playerHand),
           betAmount: session.currentBet,
-          result: gameResults[0].result,
-          payout: gameResults[0].payout,
-          isBlackjack: gameResults[0].result === "blackjack",
-          isBusted: gameResults[0].result === "bust",
+          result: handResults[0].result,
+          payout: handResults[0].payout,
+          isBlackjack: handResults[0].result === "blackjack",
+          isBusted: handResults[0].result === "bust",
           hasDoubled: session.hasDoubled || false,
           insurance: session.insuranceBet || 0,
+          insuranceResult: insuranceResult,
         },
       ];
 

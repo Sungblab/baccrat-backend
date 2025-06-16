@@ -262,7 +262,7 @@ class BlackjackService {
     }
   }
 
-  // 블랙잭 체크 및 처리
+  // 블랙잭 체크 및 처리 (플레이어 블랙잭만 체크)
   checkBlackjack(userId) {
     const session = this.getGameSession(userId);
     if (!session) {
@@ -277,41 +277,22 @@ class BlackjackService {
     }
 
     const playerValue = this.calculateHandValue(session.playerHand);
-    const dealerValue = this.calculateHandValue(session.dealerHand);
     const playerBlackjack = playerValue === 21;
-    const dealerBlackjack = dealerValue === 21;
 
-    if (playerBlackjack || dealerBlackjack) {
-      // 블랙잭이 있으면 게임 종료
-      session.status = "finished";
-      session.gameEndTime = new Date();
-
-      if (playerBlackjack && dealerBlackjack) {
-        // 둘 다 블랙잭 - 푸시 (베팅액 반환)
-        session.handResults.push({
-          result: "push",
-          payout: session.currentBet,
-        });
-        session.totalPayout = session.currentBet;
-        session.balance += session.currentBet;
-      } else if (playerBlackjack) {
-        // 플레이어 블랙잭 - 1.5배 지급
-        const payout = Math.floor(session.currentBet * 2.5);
-        session.handResults.push({ result: "blackjack", payout });
-        session.totalPayout = payout;
-        session.balance += payout;
-      } else {
-        // 딜러 블랙잭 - 플레이어 패배
-        session.handResults.push({ result: "lose", payout: 0 });
-        session.totalPayout = 0;
-      }
+    // 플레이어 블랙잭만 체크 (딜러 블랙잭은 딜러 턴에서 확인)
+    if (playerBlackjack) {
+      // 플레이어 블랙잭인 경우 딜러 블랙잭 체크는 딜러 턴에서
+      // 여기서는 플레이어 블랙잭 표시만 하고 딜러 턴으로 넘어감
+      session.status = "dealer-turn";
+      session.playerBlackjack = true;
 
       return {
         success: true,
         isBlackjack: true,
-        playerBlackjack,
-        dealerBlackjack,
+        playerBlackjack: true,
+        dealerBlackjack: false, // 아직 모름
         session: this.getSessionData(session),
+        needsDealerCheck: true, // 딜러 턴에서 블랙잭 체크 필요
       };
     }
 
@@ -319,6 +300,43 @@ class BlackjackService {
       success: true,
       isBlackjack: false,
       session: this.getSessionData(session),
+    };
+  }
+
+  // 딜러 블랙잭 체크 (딜러 턴에서만 호출)
+  checkDealerBlackjack(session) {
+    const dealerValue = this.calculateHandValue(session.dealerHand);
+    const dealerBlackjack = dealerValue === 21 && session.dealerHand.length === 2;
+    
+    if (dealerBlackjack) {
+      session.dealerBlackjack = true;
+      session.status = "finished";
+      session.gameEndTime = new Date();
+
+      // 플레이어도 블랙잭인지 확인
+      if (session.playerBlackjack) {
+        // 둘 다 블랙잭 - 푸시
+        session.handResults.push({
+          result: "push",
+          payout: session.currentBet,
+        });
+        session.totalPayout = session.currentBet;
+        session.balance += session.currentBet;
+      } else {
+        // 딜러만 블랙잭 - 플레이어 패배
+        session.handResults.push({ result: "lose", payout: 0 });
+        session.totalPayout = 0;
+      }
+
+      return {
+        isDealerBlackjack: true,
+        holeCard: session.dealerHand[0], // 첫 번째 카드(홀 카드)
+        session: this.getSessionData(session),
+      };
+    }
+
+    return {
+      isDealerBlackjack: false,
     };
   }
 
@@ -350,6 +368,11 @@ class BlackjackService {
     currentHand.push(newCard);
     const handValue = this.calculateHandValue(currentHand);
 
+    // 스플릿 상태에서는 playerHand도 업데이트 (클라이언트 표시용)
+    if (session.isSplit) {
+      session.playerHand = [...currentHand];
+    }
+
     // 더블다운 불가능하게 변경 (3장째부터)
     session.canDouble = false;
 
@@ -367,21 +390,27 @@ class BlackjackService {
     }
 
     if (handValue > 21) {
-      // 버스트 - 즉시 게임 종료
-      session.status = "finished";
-      session.gameEndTime = new Date();
-      session.handResults.push({ result: "bust", payout: 0 });
-      session.totalPayout = 0;
+      // 버스트 처리
+      if (session.isSplit) {
+        // 스플릿 중인 경우 현재 핸드만 버스트
+        return this.finishCurrentSplitHandWithResult(session, "bust", handValue, newCard);
+      } else {
+        // 일반 게임에서 버스트 - 즉시 게임 종료
+        session.status = "finished";
+        session.gameEndTime = new Date();
+        session.handResults.push({ result: "bust", payout: 0 });
+        session.totalPayout = 0;
 
-      return {
-        success: true,
-        message: "버스트! 게임이 종료되었습니다.",
-        newCard,
-        handValue,
-        session: this.getSessionData(session),
-        isBust: true, // 버스트 플래그 추가
-        wasDoubled, // 더블다운이었는지 여부
-      };
+        return {
+          success: true,
+          message: "버스트! 게임이 종료되었습니다.",
+          newCard,
+          handValue,
+          session: this.getSessionData(session),
+          isBust: true,
+          wasDoubled,
+        };
+      }
     }
 
     session.lastActivity = new Date();
@@ -389,9 +418,14 @@ class BlackjackService {
     // 더블다운 후 카드를 받았으면 자동 스탠드
     if (wasDoubled) {
       setTimeout(() => {
-        session.status = "dealer-turn";
-        this.dealerPlay(session);
-      }, 500); // 0.5초 후 딜러 턴 진행
+        if (session.isSplit) {
+          // 스플릿에서 더블다운 후에는 현재 핸드 완료
+          this.finishCurrentSplitHandWithResult(session, "stand", handValue, newCard);
+        } else {
+          session.status = "dealer-turn";
+          this.dealerPlay(session);
+        }
+      }, 500);
     }
 
     return {
@@ -400,7 +434,9 @@ class BlackjackService {
       newCard,
       handValue,
       session: this.getSessionData(session),
-      wasDoubled, // 더블다운이었는지 여부
+      wasDoubled,
+      isSplit: session.isSplit,
+      currentHandIndex: session.currentHandIndex,
     };
   }
 
@@ -415,22 +451,56 @@ class BlackjackService {
       return { success: false, message: "스탠드할 수 있는 상태가 아닙니다." };
     }
 
-    if (session.isSplit) {
-      // 스플릿 중인 경우 현재 핸드 완료
-      this.finishCurrentSplitHand(session, "stand");
-    } else {
-      // 일반 게임에서 스탠드 - 딜러 턴으로
-      session.status = "dealer-turn";
-      this.dealerPlay(session);
-    }
-
     session.lastActivity = new Date();
 
-    return {
-      success: true,
-      message: "스탠드했습니다.",
-      session: this.getSessionData(session),
-    };
+    if (session.isSplit) {
+      // 스플릿 상태에서 스탠드
+      const currentHand = session.splitHands[session.currentHandIndex];
+      const handValue = this.calculateHandValue(currentHand);
+      
+      // 현재 핸드 완료 처리
+      session.handResults[session.currentHandIndex] = {
+        result: "stand",
+        handValue,
+        hand: [...currentHand],
+      };
+
+      // 다음 핸드로 이동
+      session.currentHandIndex++;
+
+      if (session.currentHandIndex >= session.splitHands.length) {
+        // 모든 스플릿 핸드 완료 - 딜러 턴
+        session.status = "dealer-turn";
+        this.dealerPlay(session);
+
+        return {
+          success: true,
+          message: "모든 핸드 완료! 딜러 턴을 진행합니다.",
+          session: this.getSessionData(session),
+          allHandsComplete: true,
+        };
+      } else {
+        // 다음 핸드로 이동
+        session.playerHand = [...session.splitHands[session.currentHandIndex]];
+        
+        return {
+          success: true,
+          message: `핸드 ${session.currentHandIndex}번 스탠드! 다음 핸드로 이동합니다.`,
+          session: this.getSessionData(session),
+          nextHandIndex: session.currentHandIndex,
+        };
+      }
+    } else {
+      // 일반 게임에서 스탠드 - 딜러 턴으로 넘어가기
+      session.status = "dealer-turn";
+      this.dealerPlay(session);
+
+      return {
+        success: true,
+        message: "스탠드했습니다. 딜러 턴을 진행합니다.",
+        session: this.getSessionData(session),
+      };
+    }
   }
 
   // 더블다운
@@ -469,8 +539,8 @@ class BlackjackService {
     };
   }
 
-  // 보험 처리
-  insurance(userId) {
+  // 보험 처리 (개선)
+  insurance(userId, amount = null) {
     const session = this.getGameSession(userId);
     if (!session) {
       return { success: false, message: "게임 세션을 찾을 수 없습니다." };
@@ -480,7 +550,19 @@ class BlackjackService {
       return { success: false, message: "보험을 걸 수 있는 상태가 아닙니다." };
     }
 
-    const insuranceAmount = Math.round(session.currentBet / 2);
+    // 딜러 업카드가 A인지 확인
+    const dealerUpCard = session.dealerHand[1]; // 두 번째 카드가 업카드
+    if (!dealerUpCard || dealerUpCard.value !== "A") {
+      return {
+        success: false,
+        message: "딜러 업카드가 A가 아니므로 보험을 들 수 없습니다.",
+      };
+    }
+
+    // 보험료 계산 (베팅액의 절반이 최대)
+    const maxInsuranceAmount = Math.floor(session.currentBet / 2);
+    const insuranceAmount = amount && amount <= maxInsuranceAmount ? amount : maxInsuranceAmount;
+
     if (session.balance < insuranceAmount) {
       return { success: false, message: "보험을 위한 잔고가 부족합니다." };
     }
@@ -493,9 +575,77 @@ class BlackjackService {
 
     return {
       success: true,
-      message: "보험을 걸었습니다.",
+      message: `보험에 가입했습니다. (${insuranceAmount.toLocaleString()}원)`,
       session: this.getSessionData(session),
       insuranceAmount: insuranceAmount,
+    };
+  }
+
+  // 서렌더 (항복) 처리
+  surrender(userId) {
+    const session = this.getGameSession(userId);
+    if (!session) {
+      return { success: false, message: "게임 세션을 찾을 수 없습니다." };
+    }
+
+    if (session.status !== "playing") {
+      return {
+        success: false,
+        message: "서렌더할 수 있는 상태가 아닙니다.",
+      };
+    }
+
+    // 처음 2장만 받은 상태에서만 서렌더 가능
+    if (session.playerHand.length !== 2) {
+      return {
+        success: false,
+        message: "서렌더는 처음 2장을 받은 후에만 가능합니다.",
+      };
+    }
+
+    // 스플릿 상태에서는 서렌더 불가
+    if (session.isSplit) {
+      return {
+        success: false,
+        message: "스플릿 상태에서는 서렌더할 수 없습니다.",
+      };
+    }
+
+    // 딜러 블랙잭 체크 (딜러가 블랙잭이면 서렌더 불가)
+    const dealerValue = this.calculateHandValue(session.dealerHand);
+    if (dealerValue === 21 && session.dealerHand.length === 2) {
+      return {
+        success: false,
+        message: "딜러가 블랙잭이므로 서렌더할 수 없습니다.",
+      };
+    }
+
+    // 서렌더 처리 - 베팅액의 절반 반환
+    const surrenderAmount = Math.floor(session.currentBet / 2);
+    session.balance += surrenderAmount;
+    session.status = "finished";
+    session.gameEndTime = new Date();
+    session.lastActivity = new Date();
+
+    // 게임 결과 저장
+    session.handResults.push({
+      result: "surrender",
+      payout: surrenderAmount, // 반환받은 금액 
+      originalBet: session.currentBet,
+      lossAmount: session.currentBet - surrenderAmount, // 실제 잃은 금액
+      playerValue: this.calculateHandValue(session.playerHand),
+      dealerValue: dealerValue,
+      surrenderAmount: surrenderAmount,
+    });
+
+    session.totalPayout = surrenderAmount;
+
+    return {
+      success: true,
+      message: `서렌더했습니다. ${surrenderAmount.toLocaleString()}원이 반환됩니다.`,
+      surrenderAmount,
+      lossAmount: session.currentBet - surrenderAmount,
+      session: this.getSessionData(session),
     };
   }
 
@@ -566,12 +716,27 @@ class BlackjackService {
       dealerValue === 21 && session.dealerHand.length === 2;
 
     // 보험 처리
+    let insuranceResult = null;
     if (session.insuranceBet > 0) {
       if (dealerBlackjack) {
-        const insurancePayout = session.insuranceBet * 3;
+        // 보험 승리: 2배 지급 (베팅액 + 이익)
+        const insurancePayout = session.insuranceBet * 2;
         session.balance += insurancePayout;
         session.totalPayout += insurancePayout;
+        insuranceResult = {
+          won: true,
+          amount: session.insuranceBet,
+          payout: insurancePayout,
+          message: "보험 승리! 딜러 블랙잭으로 보험금 지급"
+        };
       } else {
+        // 보험 패배: 보험료 손실
+        insuranceResult = {
+          won: false,
+          amount: session.insuranceBet,
+          payout: 0,
+          message: "보험 패배! 딜러가 블랙잭이 아닙니다"
+        };
       }
     }
 
@@ -655,7 +820,12 @@ class BlackjackService {
     }
 
     // 게임 결과 반환 (상태 초기화는 나중에 처리)
-    return gameResults;
+    return {
+      handResults: gameResults,
+      insuranceResult: insuranceResult,
+      totalPayout: session.totalPayout,
+      finalBalance: session.balance
+    };
   }
 
   // 다음 게임을 위한 상태 초기화 준비
@@ -713,6 +883,53 @@ class BlackjackService {
       // 모든 스플릿 핸드 완료 - 딜러 턴
       session.status = "dealer-turn";
       this.dealerPlay(session);
+    } else {
+      // 다음 핸드로 이동하면서 플레이어 핸드 업데이트
+      session.playerHand = [...session.splitHands[session.currentHandIndex]];
+    }
+  }
+
+  // 스플릿 핸드 완료 처리 (결과와 함께)
+  finishCurrentSplitHandWithResult(session, result, handValue, lastCard) {
+    const currentHand = session.splitHands[session.currentHandIndex];
+    
+    // 결과 저장 (임시)
+    session.handResults[session.currentHandIndex] = {
+      result,
+      handValue,
+      hand: [...currentHand],
+    };
+
+    // 다음 핸드로 이동
+    session.currentHandIndex++;
+
+    if (session.currentHandIndex >= session.splitHands.length) {
+      // 모든 스플릿 핸드 완료 - 딜러 턴
+      session.status = "dealer-turn";
+      this.dealerPlay(session);
+
+      return {
+        success: true,
+        message: result === "bust" ? "버스트! 모든 핸드 완료, 딜러 턴으로 진행합니다." : "모든 핸드 완료, 딜러 턴으로 진행합니다.",
+        newCard: lastCard,
+        handValue,
+        session: this.getSessionData(session),
+        allHandsComplete: true,
+        isBust: result === "bust",
+      };
+    } else {
+      // 다음 핸드로 이동
+      session.playerHand = [...session.splitHands[session.currentHandIndex]];
+      
+      return {
+        success: true,
+        message: result === "bust" ? "버스트! 다음 핸드로 이동합니다." : "다음 핸드로 이동합니다.",
+        newCard: lastCard,
+        handValue,
+        session: this.getSessionData(session),
+        nextHandIndex: session.currentHandIndex,
+        isBust: result === "bust",
+      };
     }
   }
 
