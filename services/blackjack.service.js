@@ -353,6 +353,14 @@ class BlackjackService {
     // 더블다운 불가능하게 변경 (3장째부터)
     session.canDouble = false;
 
+    // 더블다운 후에는 카드 한 장 받은 후 자동 스탠드
+    const wasDoubled = session.isDoubled;
+    if (wasDoubled) {
+      session.canHit = false;
+      session.canStand = false;
+      session.isDoubled = false; // 더블다운 플래그 해제
+    }
+
     // 21이면 자동 스탠드
     if (handValue === 21) {
       return this.stand(userId);
@@ -372,17 +380,27 @@ class BlackjackService {
         handValue,
         session: this.getSessionData(session),
         isBust: true, // 버스트 플래그 추가
+        wasDoubled, // 더블다운이었는지 여부
       };
     }
 
     session.lastActivity = new Date();
 
+    // 더블다운 후 카드를 받았으면 자동 스탠드
+    if (wasDoubled) {
+      setTimeout(() => {
+        session.status = "dealer-turn";
+        this.dealerPlay(session);
+      }, 500); // 0.5초 후 딜러 턴 진행
+    }
+
     return {
       success: true,
-      message: handValue > 21 ? "버스트!" : "카드를 받았습니다.",
+      message: wasDoubled ? "더블다운으로 카드 1장 받았습니다. 자동 스탠드!" : "카드를 받았습니다.",
       newCard,
       handValue,
       session: this.getSessionData(session),
+      wasDoubled, // 더블다운이었는지 여부
     };
   }
 
@@ -434,18 +452,20 @@ class BlackjackService {
     session.balance -= session.currentBet;
     session.currentBet *= 2;
     session.canDouble = false;
+    session.isDoubled = true; // 더블다운 상태 표시
+    session.lastActivity = new Date();
 
-    // 카드 한 장만 더 받고 자동 스탠드
-    const hitResult = this.hit(userId);
-    if (hitResult.success && session.status === "playing") {
-      // 버스트가 아니면 자동 스탠드
-      setTimeout(() => this.stand(userId), 100);
-    }
+    // 더블다운 후에는 히트 한 번만 가능, 스플릿/보험 불가
+    session.canHit = true;  // 히트 한 번은 가능
+    session.canStand = true; // 스탠드도 가능 (카드 받지 않고 스탠드 가능)
+    session.canSplit = false;
+    session.canInsurance = false;
 
     return {
       success: true,
-      message: "더블다운했습니다.",
+      message: "더블다운! 이제 카드 1장만 더 받을 수 있습니다.",
       session: this.getSessionData(session),
+      doubledDown: true, // 더블다운 완료 플래그
     };
   }
 

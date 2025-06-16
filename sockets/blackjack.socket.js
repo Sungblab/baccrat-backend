@@ -406,14 +406,9 @@ class BlackjackSocket {
             success: true,
             message: result.message,
             session: result.session,
-            newCard: result.newCard, // 서비스에서 반환된 새로 받은 카드 정보
+            doubledDown: result.doubledDown, // 더블다운 완료 플래그
           });
           socket.emit("session_updated", result.session);
-
-          // 게임이 종료된 경우
-          if (result.session.status === "finished") {
-            this.finishGame(socket.userId);
-          }
         } else {
           socket.emit("action_result", result);
         }
