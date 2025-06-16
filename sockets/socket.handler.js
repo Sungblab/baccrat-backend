@@ -379,12 +379,24 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     const endTime = new Date(Date.now() + bettingDuration * 1000);
     bettingActive = true;
     bettingEndTime = endTime;
+    
+    // 게임 상태 업데이트
+    updateGameState('betting', {
+      gameStartTime: Date.now(),
+      bettingEndTime: endTime
+    });
+    
     io.emit("betting_started");
     io.emit("betting_end_time", endTime);
+    
     setTimeout(() => {
       if (!bettingActive) return;
       bettingActive = false;
       bettingEndTime = null;
+      
+      // 게임 상태 업데이트
+      updateGameState('playing');
+      
       io.emit("betting_closed");
 
       // 관리자 자동 베팅이 활성화되어 있으면 2초 후 게임 시작
@@ -1072,6 +1084,14 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         cancelNoUserTimeout();
       }
       
+      // 사용자의 현재 베팅 정보 가져오기
+      const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
+        if (curBet.userId === userId) {
+          acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
+        }
+        return acc;
+      }, {});
+
       // 세션 복원 데이터
       const sessionData = {
         gameState: gameSessionState,
@@ -1079,16 +1099,41 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         bettingEndTime: bettingEndTime,
         autoGameActive: autoUserGameState.isActive,
         scheduledStop: scheduledStop,
-        restoredFromSession: false,
-        userBalance: user.balance
+        restoredFromSession: true,
+        userBalance: user.balance,
+        currentBets: myCurrentBetsOnChoices,
+        bettingStats: currentBettingStats
       };
+      
+      console.log(`사용자 ${userId} 게임 상태 복원:`, {
+        bettingActive: bettingActive,
+        bettingEndTime: bettingEndTime,
+        currentBets: myCurrentBetsOnChoices,
+        gamePhase: gameSessionState.currentGamePhase
+      });
       
       // 클라이언트에 게임 상태 전송
       socket.emit("game_state_restored", sessionData);
+      
+      // 베팅 상태 및 내 베팅 정보 전송
+      socket.emit("betting_status", {
+        active: bettingActive,
+        endTime: bettingEndTime,
+        stats: currentBettingStats,
+      });
+      
+      if (Object.keys(myCurrentBetsOnChoices).length > 0) {
+        socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
+      }
 
       // 첫 번째 사용자가 접속하고 게임이 비활성화 상태면 시작
-      if (!autoUserGameState.isActive && !adminAutoGameState.isActive && !backgroundGameState.isActive) {
+      // 단, 베팅이 진행 중이거나 결과 처리 중이면 새 게임을 시작하지 않음
+      if (!autoUserGameState.isActive && !adminAutoGameState.isActive && !backgroundGameState.isActive 
+          && !bettingActive && !resultProcessing) {
+        console.log('첫 번째 사용자 접속으로 자동 게임 시작');
         startAutoUserGame();
+      } else if (bettingActive || resultProcessing) {
+        console.log('게임 진행 중이므로 새로운 자동 게임을 시작하지 않음');
       }
 
       // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
@@ -1756,6 +1801,10 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       if (!bettingActive || !autoUserGameState.isActive) return;
       bettingActive = false;
       bettingEndTime = null;
+      
+      // 게임 상태 업데이트
+      updateGameState('playing');
+      
       io.emit("betting_closed");
 
       setTimeout(() => {
@@ -1990,6 +2039,9 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
           total_bet_amount: 0,
         },
       };
+
+      // 게임 상태 업데이트
+      updateGameState('waiting');
 
       io.emit("result_approved");
       io.emit("update_coins");
