@@ -1025,6 +1025,48 @@ class BlackjackSocket {
     }
 
     try {
+      // 블랙잭 승리로 이미 DB 저장이 완료된 경우 중복 처리 방지
+      if (session.dbSaved) {
+        console.log(
+          `[BlackjackSocket] 블랙잭 승리로 이미 DB 저장 완료됨: ${userId}`
+        );
+
+        // 게임 저장만 수행하고 잔액 업데이트는 건너뛰기
+        const gameResults = this.blackjackService.determineGameResult(session);
+        const handResults = gameResults.handResults || gameResults;
+        const insuranceResult = gameResults.insuranceResult || null;
+
+        if (handResults && handResults.length > 0) {
+          try {
+            await this.saveGameToDatabase(
+              session,
+              handResults,
+              insuranceResult
+            );
+          } catch (saveError) {
+            console.error(`[BlackjackSocket] 게임 저장 오류:`, saveError);
+          }
+        }
+
+        // 세션 초기화 후 결과 전송
+        this.blackjackService.prepareForNextGame(session);
+
+        const playerSocket = this.playerSockets.get(userId);
+        if (playerSocket && playerSocket.connected) {
+          try {
+            playerSocket.emit("game_finished", {
+              success: true,
+              session: this.blackjackService.getSessionData(session),
+              results: handResults,
+              insuranceResult: insuranceResult,
+            });
+          } catch (error) {
+            console.error(`[BlackjackSocket] 게임 완료 알림 전송 오류:`, error);
+          }
+        }
+        return; // 중복 처리 방지를 위해 여기서 종료
+      }
+
       // 게임 결과 계산 (상태 초기화는 나중에 처리)
       const gameResults = this.blackjackService.determineGameResult(session);
 
