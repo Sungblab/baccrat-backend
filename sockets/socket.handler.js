@@ -65,7 +65,7 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     nextAutoStart: null,
   };
 
-  // 사용자 접속 기반 자동 게임 상태 관리 (백그라운드 방식으로 변경)
+  // 사용자 접속 기반 자동 게임 상태 관리 (사용자 없을 때 자동 종료)
   let autoUserGameState = {
     isActive: false,
     connectedUsers: new Set(), // 바카라 게임에 접속한 사용자들 추적
@@ -74,6 +74,8 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     shouldStopAfterCurrentGame: false, // 현재 게임 완료 후 중지 플래그
     gameCount: 0, // 게임 카운트 추가
     isManualStop: false, // 수동 중지 플래그 (나가기 버튼)
+    noUserTimeout: null, // 사용자 없을 때 자동 종료 타이머
+    NO_USER_TIMEOUT_DURATION: 30000, // 30초 후 자동 종료
   };
 
   const cleanUserCache = () => {
@@ -415,6 +417,29 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
         .catch((err) => {
           // 에러 무시 (사용자가 없을 수 있음)
         });
+    }
+  }
+
+  // 사용자가 없을 때 자동 종료 타이머 시작
+  function startNoUserTimeout() {
+    // 기존 타이머가 있으면 제거
+    if (autoUserGameState.noUserTimeout) {
+      clearTimeout(autoUserGameState.noUserTimeout);
+    }
+    
+    autoUserGameState.noUserTimeout = setTimeout(() => {
+      if (autoUserGameState.connectedUsers.size === 0 && autoUserGameState.isActive) {
+        console.log("30초 동안 사용자가 없어서 자동 게임을 종료합니다.");
+        stopAutoUserGame(false, "no_users");
+      }
+    }, autoUserGameState.NO_USER_TIMEOUT_DURATION);
+  }
+
+  // 사용자가 없을 때 자동 종료 타이머 취소
+  function cancelNoUserTimeout() {
+    if (autoUserGameState.noUserTimeout) {
+      clearTimeout(autoUserGameState.noUserTimeout);
+      autoUserGameState.noUserTimeout = null;
     }
   }
 
@@ -989,17 +1014,29 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       userSockets.delete(socket.userId);
     }
 
-    // 바카라 게임에서 사용자 제거 (연결 끊김) - 단순히 목록에서만 제거
+    // 바카라 게임에서 사용자 제거 (연결 끊김)
     if (socket.userIdForAutoGame) {
       const userId = socket.userIdForAutoGame;
       
-      // 연결된 사용자 목록에서 제거 (게임은 계속 진행)
+      // 연결된 사용자 목록에서 제거
       autoUserGameState.connectedUsers.delete(userId);
       
-      console.log(`사용자 ${userId} 연결 해제 (게임은 계속 진행)`);
+      console.log(`사용자 ${userId} 연결 해제 (현재 접속자: ${autoUserGameState.connectedUsers.size}명)`);
+
+      // 사용자가 모두 나갔고 게임이 활성화되어 있으면 30초 후 자동 종료 타이머 시작
+      if (autoUserGameState.connectedUsers.size === 0 && autoUserGameState.isActive) {
+        console.log("모든 사용자가 나갔습니다. 30초 후 자동 종료됩니다.");
+        startNoUserTimeout();
+      }
 
       // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
       broadcastUserAutoGameStatus();
+      
+      // 클라이언트들에게 사용자 나감 알림 (게임 상태 포함)
+      io.emit("user_left", {
+        userCount: autoUserGameState.connectedUsers.size,
+        isGameActive: autoUserGameState.isActive
+      });
     }
   });
 
@@ -1030,6 +1067,11 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       // 연결된 사용자 목록에 추가
       autoUserGameState.connectedUsers.add(userId);
       
+      // 사용자가 다시 접속했으면 자동 종료 타이머 취소
+      if (autoUserGameState.connectedUsers.size > 0) {
+        cancelNoUserTimeout();
+      }
+      
       // 세션 복원 데이터
       const sessionData = {
         gameState: gameSessionState,
@@ -1051,6 +1093,12 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
 
       // 관리자들에게 사용자 자동 게임 상태 업데이트 브로드캐스트
       broadcastUserAutoGameStatus();
+      
+      // 클라이언트들에게 사용자 접속 알림 (게임 상태 포함)
+      io.emit("user_joined", {
+        userCount: autoUserGameState.connectedUsers.size,
+        isGameActive: autoUserGameState.isActive
+      });
       
       console.log(`사용자 ${userId} 바카라 게임 참여 (접속자: ${autoUserGameState.connectedUsers.size}명)`);
       
@@ -1633,19 +1681,19 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
     }
   }
 
-  // 사용자 접속 기반 자동 게임 중지 함수 (수동 중지만 가능)
-  function stopAutoUserGame(isManualStop = false) {
+  // 사용자 접속 기반 자동 게임 중지 함수 (수동 중지 또는 사용자 없을 때)
+  function stopAutoUserGame(isManualStop = false, reason = 'manual') {
     if (!autoUserGameState.isActive) return;
 
-    // 수동 중지가 아니면 중지하지 않음 (백그라운드처럼 계속 실행)
-    if (!isManualStop) {
-      console.log('자동 게임은 수동 중지만 가능합니다.');
+    // 수동 중지가 아니고 사용자 없음이 아니면 중지하지 않음
+    if (!isManualStop && reason !== 'no_users') {
+      console.log('자동 게임은 수동 중지 또는 사용자 없을 때만 종료됩니다.');
       return;
     }
 
     autoUserGameState.isActive = false;
     autoUserGameState.shouldStopAfterCurrentGame = false;
-    autoUserGameState.isManualStop = true;
+    autoUserGameState.isManualStop = isManualStop;
     
     // 예약 종료 취소
     cancelScheduledStop();
@@ -1660,6 +1708,9 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       autoUserGameState.bettingTimer = null;
     }
     
+    // 사용자 없음 타이머 정리
+    cancelNoUserTimeout();
+    
     // 베팅 진행 중이면 강제 종료
     if (bettingActive) {
       bettingActive = false;
@@ -1667,7 +1718,17 @@ module.exports = (io, baccaratGame, userSockets, socket) => {
       io.emit("betting_closed");
     }
     
-    console.log('사용자 기반 자동 게임 수동 중지됨');
+    let stopMessage = isManualStop ? 
+      '사용자 기반 자동 게임 수동 중지됨' : 
+      `사용자 기반 자동 게임 자동 중지됨 (이유: ${reason})`;
+    
+    console.log(stopMessage);
+    
+    // 클라이언트에 게임 종료 알림
+    io.emit("user_auto_game_stopped", {
+      message: reason === 'no_users' ? '사용자가 없어서 게임이 자동 종료되었습니다.' : '게임이 종료되었습니다.',
+      reason: reason
+    });
     
     // 게임 상태 업데이트
     updateGameState('waiting');
