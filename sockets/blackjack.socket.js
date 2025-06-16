@@ -323,8 +323,19 @@ class BlackjackSocket {
           message: result.message,
           session: result.session,
           isBust: result.isBust || false,
+          wasDoubled: result.wasDoubled || false, // 더블다운 여부 추가
         });
         socket.emit("session_updated", result.session);
+
+        // 더블다운 후 딜러 턴 자동 시작
+        if (result.wasDoubled && !result.isBust) {
+          const session = this.blackjackService.getGameSession(socket.userId);
+          if (session && session.status === "dealer-turn") {
+            setTimeout(() => {
+              this.processDealerTurn(socket.userId);
+            }, 1500); // 1.5초 후 딜러 턴 시작
+          }
+        }
 
         // 버스트인 경우 즉시 게임 종료
         if (result.isBust || result.session.status === "finished") {
@@ -581,6 +592,28 @@ class BlackjackSocket {
           message: "세션 초기화 중 오류가 발생했습니다.",
         });
       }
+    });
+
+    // 딜러 턴 시작 요청 처리
+    socket.on("start_dealer_turn", () => {
+      if (!socket.isAuthenticated || !socket.userId) {
+        socket.emit("error", { message: "인증이 필요합니다." });
+        return;
+      }
+
+      const session = this.blackjackService.getGameSession(socket.userId);
+      if (!session) {
+        socket.emit("error", { message: "게임 세션을 찾을 수 없습니다." });
+        return;
+      }
+
+      if (session.status !== "dealer-turn") {
+        socket.emit("error", { message: "딜러 턴 상태가 아닙니다." });
+        return;
+      }
+
+      // 딜러 턴 프로세스 시작
+      this.processDealerTurn(socket.userId);
     });
 
     // 연결 해제 처리
