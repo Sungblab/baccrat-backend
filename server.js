@@ -2241,7 +2241,7 @@ io.on("connection", (socket) => {
         newBalance: user.balance,
         cancelledBet: betToCancel,
       });
-      io.emit("update_coins"); // 다른 유저에게도 (필요하다면) 잔액 업데이트 (여기서는 잔액 변화가 특정 유저에게만 해당)
+      // 베팅 취소는 개별 사용자만 영향을 받으므로 update_coins 제거
 
       // 해당 유저의 선택지별 총 베팅액 다시 계산하여 전송
       const myCurrentBetsOnChoicesAfterCancel = currentBets.reduce(
