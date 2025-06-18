@@ -1149,14 +1149,16 @@ async function processTempBetsToReal() {
       user.rollingWagered = (user.rollingWagered || 0) + totalBetAmount;
       await user.save();
 
-      // 각 개별 베팅을 실제 베팅으로 변환
-      for (const bet of userData.bets) {
-        currentBets.push({
-          userId: userId,
-          choice: bet.choice,
-          amount: bet.amount,
-          username: userData.username,
-        });
+      // 각 선택지별 총액을 실제 베팅으로 변환
+      for (const [choice, amount] of Object.entries(userData.bets)) {
+        if (amount > 0) {
+          currentBets.push({
+            userId: userId,
+            choice: choice,
+            amount: amount,
+            username: userData.username,
+          });
+        }
       }
 
       // 사용자에게 실제 잔액 업데이트 알림
@@ -1500,14 +1502,8 @@ io.on("connection", (socket) => {
         let myCurrentBetsOnChoices = {};
 
         if (tempBets.has(userId)) {
-          // 개별 베팅 배열에서 choice별로 합계 계산
-          const userBets = tempBets.get(userId).bets;
-          for (const bet of userBets) {
-            if (!myCurrentBetsOnChoices[bet.choice]) {
-              myCurrentBetsOnChoices[bet.choice] = 0;
-            }
-            myCurrentBetsOnChoices[bet.choice] += bet.amount;
-          }
+          // choice별 총액에서 베팅 정보 가져오기
+          myCurrentBetsOnChoices = tempBets.get(userId).bets;
         } else {
           // 실제 베팅에서 확인 (게임 진행 중인 경우)
           myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
@@ -2102,20 +2098,27 @@ io.on("connection", (socket) => {
     if (!tempBets.has(userId)) {
       tempBets.set(userId, {
         username: username,
-        bets: [], // 개별 베팅 배열로 변경
+        bets: {}, // choice별 총액 저장
+        lastBetAction: null, // 마지막 베팅 액션 저장
         totalAmount: 0,
       });
     }
 
     const userTempBets = tempBets.get(userId);
 
-    // 개별 베팅 추가
-    userTempBets.bets.push({
+    // 선택지별 베팅액 추가
+    if (!userTempBets.bets[choice]) {
+      userTempBets.bets[choice] = 0;
+    }
+    userTempBets.bets[choice] += amount;
+    userTempBets.totalAmount += amount;
+
+    // 마지막 베팅 액션 기록
+    userTempBets.lastBetAction = {
       choice: choice,
       amount: amount,
       timestamp: Date.now(),
-    });
-    userTempBets.totalAmount += amount;
+    };
 
     return userTempBets;
   };
@@ -2133,17 +2136,8 @@ io.on("connection", (socket) => {
 
     // 임시 베팅에서 통계 계산
     for (const [userId, userData] of tempBets.entries()) {
-      // 개별 베팅 배열에서 choice별로 합계 계산
-      const choiceTotals = {};
-      for (const bet of userData.bets) {
-        if (!choiceTotals[bet.choice]) {
-          choiceTotals[bet.choice] = 0;
-        }
-        choiceTotals[bet.choice] += bet.amount;
-      }
-
-      // 통계에 반영
-      for (const [choice, amount] of Object.entries(choiceTotals)) {
+      // choice별 총액에서 통계 계산
+      for (const [choice, amount] of Object.entries(userData.bets)) {
         if (currentBettingStats[choice]) {
           currentBettingStats[choice].count++;
           currentBettingStats[choice].total += amount;
@@ -2220,17 +2214,9 @@ io.on("connection", (socket) => {
         newBalance: user.balance - userTempBets.totalAmount, // 임시 잔액 표시
       });
 
-      // 개인 베팅 정보 업데이트 (choice별로 합계 계산)
-      const myCurrentBetsOnChoices = {};
-      for (const bet of userTempBets.bets) {
-        if (!myCurrentBetsOnChoices[bet.choice]) {
-          myCurrentBetsOnChoices[bet.choice] = 0;
-        }
-        myCurrentBetsOnChoices[bet.choice] += bet.amount;
-      }
-
+      // 개인 베팅 정보 업데이트
       socket.emit("my_bets_updated", {
-        myCurrentBetsOnChoices: myCurrentBetsOnChoices,
+        myCurrentBetsOnChoices: userTempBets.bets,
       });
 
       // 모든 클라이언트에게 베팅 통계 업데이트 전송
@@ -2273,18 +2259,30 @@ io.on("connection", (socket) => {
 
       const userTempBets = tempBets.get(userId);
 
-      // 베팅이 없으면 오류
-      if (userTempBets.bets.length === 0) {
+      // 마지막 베팅 액션이 없으면 오류
+      if (!userTempBets.lastBetAction) {
         return socket.emit("error", "취소할 베팅이 없습니다.");
       }
 
-      // 마지막 베팅 제거
-      const lastBet = userTempBets.bets.pop();
-      userTempBets.totalAmount -= lastBet.amount;
+      // 마지막 베팅 액션에서 정보 가져오기
+      const lastBet = userTempBets.lastBetAction;
+      const { choice, amount } = lastBet;
+
+      // 해당 선택지에서 마지막 베팅 금액만큼 차감
+      userTempBets.bets[choice] -= amount;
+      userTempBets.totalAmount -= amount;
+
+      // 해당 선택지 베팅이 0 이하가 되면 삭제
+      if (userTempBets.bets[choice] <= 0) {
+        delete userTempBets.bets[choice];
+      }
 
       // 베팅이 모두 제거되었으면 사용자 전체 삭제
-      if (userTempBets.bets.length === 0) {
+      if (Object.keys(userTempBets.bets).length === 0) {
         tempBets.delete(userId);
+      } else {
+        // 마지막 베팅 액션 초기화 (다음 베팅까지)
+        userTempBets.lastBetAction = null;
       }
 
       // 베팅 통계 재계산
@@ -2292,25 +2290,16 @@ io.on("connection", (socket) => {
 
       // 베팅 취소 성공 응답
       socket.emit("bet_cancelled_success", {
-        message: `마지막 베팅이 취소되었습니다. (${
-          lastBet.choice
-        } ${lastBet.amount.toLocaleString()}원)`,
+        message: `마지막 베팅이 취소되었습니다. (${choice} ${amount.toLocaleString()}원)`,
         newBalance: user.balance, // 원래 잔액으로 복원
-        cancelledAmount: lastBet.amount,
-        cancelledChoice: lastBet.choice,
+        cancelledAmount: amount,
+        cancelledChoice: choice,
       });
 
-      // 개인 베팅 정보 업데이트 (choice별로 합계 계산)
-      const myCurrentBetsOnChoices = {};
-      if (tempBets.has(userId)) {
-        const remainingBets = tempBets.get(userId).bets;
-        for (const bet of remainingBets) {
-          if (!myCurrentBetsOnChoices[bet.choice]) {
-            myCurrentBetsOnChoices[bet.choice] = 0;
-          }
-          myCurrentBetsOnChoices[bet.choice] += bet.amount;
-        }
-      }
+      // 개인 베팅 정보 업데이트
+      const myCurrentBetsOnChoices = tempBets.has(userId)
+        ? tempBets.get(userId).bets
+        : {};
 
       socket.emit("my_bets_updated", {
         myCurrentBetsOnChoices: myCurrentBetsOnChoices,
