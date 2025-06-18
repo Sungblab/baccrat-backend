@@ -2154,23 +2154,10 @@ io.on("connection", (socket) => {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
 
-      // 사용자 정보 확인 (잔액 체크용)
-      let userData = userCache.get(userId);
-      let user;
-
-      if (
-        userData &&
-        userData.cachedAt &&
-        Date.now() - userData.cachedAt < CACHE_TTL
-      ) {
-        user = userData;
-      } else {
-        user = await User.findById(userId).lean();
-        if (!user) {
-          return socket.emit("error", "사용자를 찾을 수 없습니다.");
-        }
-        user.cachedAt = Date.now();
-        userCache.set(userId, user);
+      // 베팅 시에는 항상 최신 잔액을 DB에서 직접 조회 (캐시 사용 안 함)
+      const user = await User.findById(userId).lean();
+      if (!user) {
+        return socket.emit("error", "사용자를 찾을 수 없습니다.");
       }
 
       // 베팅 제한 확인
@@ -2249,23 +2236,10 @@ io.on("connection", (socket) => {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
 
-      // 사용자 정보 확인
-      let userData = userCache.get(userId);
-      let user;
-
-      if (
-        userData &&
-        userData.cachedAt &&
-        Date.now() - userData.cachedAt < CACHE_TTL
-      ) {
-        user = userData;
-      } else {
-        user = await User.findById(userId).lean();
-        if (!user) {
-          return socket.emit("error", "사용자를 찾을 수 없습니다.");
-        }
-        user.cachedAt = Date.now();
-        userCache.set(userId, user);
+      // 베팅 취소 시에도 항상 최신 잔액을 DB에서 직접 조회 (캐시 사용 안 함)
+      const user = await User.findById(userId).lean();
+      if (!user) {
+        return socket.emit("error", "사용자를 찾을 수 없습니다.");
       }
 
       // 임시 베팅이 있는지 확인
