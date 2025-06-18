@@ -1075,6 +1075,10 @@ let bettingEndTime = null; // 베팅 종료 시간
 // 사용자별 소켓 관리
 const userSockets = new Map(); // <userId, socket>
 
+// 성능 모니터링을 위한 변수들
+let maxConcurrentUsers = 0;
+let totalBetsProcessed = 0;
+
 // 사용자 정보 캐시 (메모리 최적화)
 const userCache = new Map(); // <userId, userInfo>
 const CACHE_TTL = 5 * 60 * 1000; // 5분 캐시
@@ -2099,7 +2103,7 @@ io.on("connection", (socket) => {
       tempBets.set(userId, {
         username: username,
         bets: {}, // choice별 총액 저장
-        lastBetAction: null, // 마지막 베팅 액션 저장
+        betHistory: [], // 모든 베팅 액션을 순서대로 저장
         totalAmount: 0,
       });
     }
@@ -2113,17 +2117,22 @@ io.on("connection", (socket) => {
     userTempBets.bets[choice] += amount;
     userTempBets.totalAmount += amount;
 
-    // 마지막 베팅 액션 기록
-    userTempBets.lastBetAction = {
+    // 베팅 액션을 히스토리에 추가 (최대 100개로 제한)
+    userTempBets.betHistory.push({
       choice: choice,
       amount: amount,
       timestamp: Date.now(),
-    };
+    });
+
+    // 베팅 히스토리가 너무 길어지면 오래된 것부터 제거 (메모리 최적화)
+    if (userTempBets.betHistory.length > 100) {
+      userTempBets.betHistory.shift();
+    }
 
     return userTempBets;
   };
 
-  // 베팅 통계 업데이트 함수
+  // 베팅 통계 업데이트 함수 (성능 최적화)
   const updateBettingStats = () => {
     // 통계 초기화
     currentBettingStats = {
@@ -2134,11 +2143,14 @@ io.on("connection", (socket) => {
       banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
     };
 
-    // 임시 베팅에서 통계 계산
+    // 임시 베팅에서 통계 계산 (O(n) 최적화)
+    const tempBetsCount = tempBets.size;
+    if (tempBetsCount === 0) return; // 베팅이 없으면 즉시 리턴
+
     for (const [userId, userData] of tempBets.entries()) {
       // choice별 총액에서 통계 계산
       for (const [choice, amount] of Object.entries(userData.bets)) {
-        if (currentBettingStats[choice]) {
+        if (currentBettingStats[choice] && amount > 0) {
           currentBettingStats[choice].count++;
           currentBettingStats[choice].total += amount;
           currentBettingStats[choice].bettor_count++;
@@ -2208,6 +2220,13 @@ io.on("connection", (socket) => {
       // 베팅 통계 업데이트
       updateBettingStats();
 
+      // 성능 모니터링 업데이트
+      totalBetsProcessed++;
+      const currentUsers = tempBets.size;
+      if (currentUsers > maxConcurrentUsers) {
+        maxConcurrentUsers = currentUsers;
+      }
+
       // 즉시 성공 응답
       socket.emit("bet_success", {
         message: "베팅이 추가되었습니다.",
@@ -2259,13 +2278,13 @@ io.on("connection", (socket) => {
 
       const userTempBets = tempBets.get(userId);
 
-      // 마지막 베팅 액션이 없으면 오류
-      if (!userTempBets.lastBetAction) {
+      // 베팅 히스토리가 없으면 오류
+      if (userTempBets.betHistory.length === 0) {
         return socket.emit("error", "취소할 베팅이 없습니다.");
       }
 
-      // 마지막 베팅 액션에서 정보 가져오기
-      const lastBet = userTempBets.lastBetAction;
+      // 베팅 히스토리에서 마지막 베팅 제거
+      const lastBet = userTempBets.betHistory.pop();
       const { choice, amount } = lastBet;
 
       // 해당 선택지에서 마지막 베팅 금액만큼 차감
@@ -2280,9 +2299,6 @@ io.on("connection", (socket) => {
       // 베팅이 모두 제거되었으면 사용자 전체 삭제
       if (Object.keys(userTempBets.bets).length === 0) {
         tempBets.delete(userId);
-      } else {
-        // 마지막 베팅 액션 초기화 (다음 베팅까지)
-        userTempBets.lastBetAction = null;
       }
 
       // 베팅 통계 재계산
