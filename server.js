@@ -761,15 +761,17 @@ class BaccaratGame {
     let bankerPair = false;
 
     if (playerHand.length >= 2) {
-      const card1Value = this.getCardValue(playerHand[0]);
-      const card2Value = this.getCardValue(playerHand[1]);
-      playerPair = card1Value === card2Value;
+      // 실제 카드 랭크 비교 (바카라 점수가 아닌 카드 자체의 value)
+      const card1Rank = playerHand[0].value;
+      const card2Rank = playerHand[1].value;
+      playerPair = card1Rank === card2Rank;
     }
 
     if (bankerHand.length >= 2) {
-      const card1Value = this.getCardValue(bankerHand[0]);
-      const card2Value = this.getCardValue(bankerHand[1]);
-      bankerPair = card1Value === card2Value;
+      // 실제 카드 랭크 비교 (바카라 점수가 아닌 카드 자체의 value)
+      const card1Rank = bankerHand[0].value;
+      const card2Rank = bankerHand[1].value;
+      bankerPair = card1Rank === card2Rank;
     }
 
     return { playerPair, bankerPair };
