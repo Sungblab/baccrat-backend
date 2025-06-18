@@ -1067,7 +1067,8 @@ function sendCardsToUserHtml(gameResult, callback) {
 // =====================
 // Socket.io 설정 및 베팅 로직
 // =====================
-let currentBets = []; // 현재 베팅 내역 저장
+let currentBets = []; // 현재 베팅 내역 저장 (일괄 처리용)
+let tempBets = new Map(); // 임시 베팅 저장 (userId -> { player: 50000, banker_pair: 10000, ... })
 let bettingActive = false; // 베팅 활성 상태
 let bettingEndTime = null; // 베팅 종료 시간
 
@@ -1113,19 +1114,78 @@ let currentBettingStats = {
 let currentGameResult = null;
 let resultProcessing = false;
 
-// 백그라운드 자동 게임 상태
-let backgroundGameState = {
+// 통합 자동 게임 상태 (자동시작 + 백그라운드 통합)
+let autoGameState = {
   isActive: false,
   gameCount: 0,
-  maxGames: 0,
+  maxGames: 0, // 0이면 무제한 (계속)
   gameTimer: null,
   bettingTimer: null,
-  adminSocketId: null, // 백그라운드 시작한 admin 소켓 ID
+  adminSocketId: null, // 자동 게임 시작한 admin 소켓 ID
 };
 
-// 백그라운드 베팅 시작 함수
-function startBackgroundBetting() {
-  if (!backgroundGameState.isActive) return;
+// 임시 베팅을 실제 베팅으로 변환하는 함수
+async function processTempBetsToReal() {
+  try {
+    // 임시 베팅을 실제 베팅 배열로 변환
+    currentBets = [];
+
+    for (const [userId, userData] of tempBets.entries()) {
+      const user = await User.findById(userId);
+      if (!user) {
+        continue;
+      }
+
+      // 사용자별 총 베팅 금액 계산
+      const totalBetAmount = userData.totalAmount;
+
+      // 잔액 체크
+      if (user.balance < totalBetAmount) {
+        continue;
+      }
+
+      // 실제 잔액 차감 및 롤링 업데이트
+      user.balance -= totalBetAmount;
+      user.rollingWagered = (user.rollingWagered || 0) + totalBetAmount;
+      await user.save();
+
+      // 각 선택지별로 베팅 기록 생성
+      for (const [choice, amount] of Object.entries(userData.bets)) {
+        if (amount > 0) {
+          currentBets.push({
+            userId: userId,
+            choice: choice,
+            amount: amount,
+            username: userData.username,
+          });
+        }
+      }
+
+      // 사용자에게 실제 잔액 업데이트 알림
+      const userSocket = userSockets.get(userId);
+      if (userSocket) {
+        userSocket.emit("balance_updated", {
+          newBalance: user.balance,
+        });
+      }
+    }
+
+    // 임시 베팅 초기화
+    tempBets.clear();
+
+    // 모든 클라이언트에게 베팅 확정 알림
+    io.emit("bets_confirmed", {
+      message: "베팅이 확정되었습니다.",
+      totalBets: currentBets.length,
+    });
+  } catch (error) {
+    console.error("임시 베팅 처리 중 오류:", error);
+  }
+}
+
+// 자동 베팅 시작 함수 (통합)
+function startAutoBetting() {
+  if (!autoGameState.isActive) return;
 
   const bettingDuration = 16; // 16초
   const endTime = new Date(Date.now() + bettingDuration * 1000);
@@ -1134,30 +1194,45 @@ function startBackgroundBetting() {
   bettingActive = true;
   bettingEndTime = endTime;
 
+  // 임시 베팅 초기화
+  tempBets.clear();
+
+  // 베팅 통계 초기화
+  currentBettingStats = {
+    player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    player_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+  };
+
   // 모든 클라이언트에게 베팅 시작과 종료 시간 알림
   io.emit("betting_started");
   io.emit("betting_end_time", endTime);
 
   // 16초 후 베팅 종료 및 게임 시작
-  backgroundGameState.bettingTimer = setTimeout(() => {
-    if (!bettingActive || !backgroundGameState.isActive) return;
+  autoGameState.bettingTimer = setTimeout(async () => {
+    if (!bettingActive || !autoGameState.isActive) return;
 
     bettingActive = false;
     bettingEndTime = null;
     io.emit("betting_closed");
 
+    // 임시 베팅을 실제 베팅으로 변환
+    await processTempBetsToReal();
+
     // 바로 게임 시작
     setTimeout(() => {
-      if (backgroundGameState.isActive) {
-        startBackgroundGame();
+      if (autoGameState.isActive) {
+        startAutoGame();
       }
     }, 2000); // 2초 후 게임 시작
   }, bettingDuration * 1000);
 }
 
-// 백그라운드 게임 시작 함수
-function startBackgroundGame() {
-  if (!backgroundGameState.isActive) return;
+// 자동 게임 시작 함수 (통합)
+function startAutoGame() {
+  if (!autoGameState.isActive) return;
 
   // 게임 실행
   const gameResult = baccaratGame.playGame();
@@ -1190,37 +1265,39 @@ function startBackgroundGame() {
 
     // 5초 후 결과 처리
     setTimeout(async () => {
-      await processBackgroundGameResult(processedGameResult);
+      await processAutoGameResult(processedGameResult);
 
       // 게임 카운트 증가
-      backgroundGameState.gameCount++;
+      autoGameState.gameCount++;
 
-      // 백그라운드 상태 업데이트를 admin에게 전송
-      if (backgroundGameState.adminSocketId) {
+      // 자동 게임 상태 업데이트를 admin에게 전송
+      if (autoGameState.adminSocketId) {
         const adminSocket = [...io.sockets.sockets.values()].find(
-          (s) => s.id === backgroundGameState.adminSocketId
+          (s) => s.id === autoGameState.adminSocketId
         );
         if (adminSocket) {
-          adminSocket.emit("background_game_status", {
-            isActive: backgroundGameState.isActive,
-            gameCount: backgroundGameState.gameCount,
-            maxGames: backgroundGameState.maxGames,
+          adminSocket.emit("auto_game_status", {
+            isActive: autoGameState.isActive,
+            gameCount: autoGameState.gameCount,
+            maxGames: autoGameState.maxGames,
           });
         }
       }
 
-      // 최대 게임 수 체크
-      if (backgroundGameState.gameCount >= backgroundGameState.maxGames) {
-        stopBackgroundGame();
-        console.log();
+      // 최대 게임 수 체크 (0이면 무제한)
+      if (
+        autoGameState.maxGames > 0 &&
+        autoGameState.gameCount >= autoGameState.maxGames
+      ) {
+        stopAutoGame();
         return;
       }
 
       // 다음 게임 스케줄 (3초 후)
-      if (backgroundGameState.isActive) {
-        backgroundGameState.gameTimer = setTimeout(() => {
-          if (backgroundGameState.isActive) {
-            startBackgroundBetting();
+      if (autoGameState.isActive) {
+        autoGameState.gameTimer = setTimeout(() => {
+          if (autoGameState.isActive) {
+            startAutoBetting();
           }
         }, 3000);
       }
@@ -1228,8 +1305,8 @@ function startBackgroundGame() {
   });
 }
 
-// 백그라운드 게임 결과 처리 함수
-async function processBackgroundGameResult(processedGameResult) {
+// 자동 게임 결과 처리 함수 (통합)
+async function processAutoGameResult(processedGameResult) {
   if (resultProcessing) return;
   resultProcessing = true;
 
@@ -1361,19 +1438,19 @@ async function processBackgroundGameResult(processedGameResult) {
   }
 }
 
-// 백그라운드 게임 중지 함수
-function stopBackgroundGame() {
-  backgroundGameState.isActive = false;
+// 자동 게임 중지 함수 (통합)
+function stopAutoGame() {
+  autoGameState.isActive = false;
 
   // 타이머들 정리
-  if (backgroundGameState.gameTimer) {
-    clearTimeout(backgroundGameState.gameTimer);
-    backgroundGameState.gameTimer = null;
+  if (autoGameState.gameTimer) {
+    clearTimeout(autoGameState.gameTimer);
+    autoGameState.gameTimer = null;
   }
 
-  if (backgroundGameState.bettingTimer) {
-    clearTimeout(backgroundGameState.bettingTimer);
-    backgroundGameState.bettingTimer = null;
+  if (autoGameState.bettingTimer) {
+    clearTimeout(autoGameState.bettingTimer);
+    autoGameState.bettingTimer = null;
   }
 
   // 진행 중인 베팅이 있다면 종료
@@ -1384,22 +1461,22 @@ function stopBackgroundGame() {
   }
 
   // admin에게 중지 알림
-  if (backgroundGameState.adminSocketId) {
+  if (autoGameState.adminSocketId) {
     const adminSocket = [...io.sockets.sockets.values()].find(
-      (s) => s.id === backgroundGameState.adminSocketId
+      (s) => s.id === autoGameState.adminSocketId
     );
     if (adminSocket) {
-      adminSocket.emit("background_game_stopped", {
-        gameCount: backgroundGameState.gameCount,
-        maxGames: backgroundGameState.maxGames,
+      adminSocket.emit("auto_game_stopped", {
+        gameCount: autoGameState.gameCount,
+        maxGames: autoGameState.maxGames,
       });
     }
   }
 
   // 상태 초기화
-  backgroundGameState.gameCount = 0;
-  backgroundGameState.maxGames = 0;
-  backgroundGameState.adminSocketId = null;
+  autoGameState.gameCount = 0;
+  autoGameState.maxGames = 0;
+  autoGameState.adminSocketId = null;
 }
 
 io.on("connection", (socket) => {
@@ -1421,12 +1498,20 @@ io.on("connection", (socket) => {
         const decoded = jwt.verify(token, JWT_SECRET);
         const userId = decoded.id;
 
-        const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
-          if (curBet.userId === userId) {
-            acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
-          }
-          return acc;
-        }, {});
+        // 임시 베팅에서 사용자 베팅 정보 확인
+        let myCurrentBetsOnChoices = {};
+
+        if (tempBets.has(userId)) {
+          myCurrentBetsOnChoices = tempBets.get(userId).bets;
+        } else {
+          // 실제 베팅에서 확인 (게임 진행 중인 경우)
+          myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
+            if (curBet.userId === userId) {
+              acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
+            }
+            return acc;
+          }, {});
+        }
 
         socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
       } catch (err) {
@@ -1571,25 +1656,43 @@ io.on("connection", (socket) => {
     bettingActive = true;
     bettingEndTime = endTime;
 
+    // 임시 베팅 초기화
+    tempBets.clear();
+
+    // 베팅 통계 초기화
+    currentBettingStats = {
+      player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      player_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    };
+
     // 모든 클라이언트에게 베팅 시작과 종료 시간 알림
     io.emit("betting_started");
     io.emit("betting_end_time", endTime);
 
     // 16초 후 베팅 종료
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!bettingActive) return; // 이미 다른 로직으로 종료되었다면 실행 안함
       bettingActive = false;
       bettingEndTime = null;
       io.emit("betting_closed");
+
+      // 임시 베팅을 실제 베팅으로 변환
+      await processTempBetsToReal();
     }, bettingDuration * 1000);
   });
 
   // 관리자용 게임 시작 이벤트
-  socket.on("admin_start_game", () => {
+  socket.on("admin_start_game", async () => {
     if (bettingActive) {
       bettingActive = false;
       bettingEndTime = null;
       io.emit("betting_closed");
+
+      // 임시 베팅을 실제 베팅으로 변환
+      await processTempBetsToReal();
     }
 
     // 게임 실행 (조작된 결과가 있으면 그것을 사용)
@@ -1799,6 +1902,7 @@ io.on("connection", (socket) => {
 
           // 상태 초기화
           currentBets = [];
+          tempBets.clear(); // 임시 베팅도 초기화
           currentBettingStats = {
             player: {
               count: 0,
@@ -1915,13 +2019,13 @@ io.on("connection", (socket) => {
     });
   });
 
-  // 백그라운드 게임 시작 이벤트 (관리자 전용)
-  socket.on("start_background_game", (data) => {
-    const { maxGames } = data;
+  // 자동 게임 시작 이벤트 (관리자 전용) - 자동시작과 백그라운드 통합
+  socket.on("start_auto_game", (data) => {
+    const { maxGames } = data; // 0이면 무제한 (계속)
 
-    // 이미 백그라운드 게임이 진행 중인지 확인
-    if (backgroundGameState.isActive) {
-      return socket.emit("error", "이미 백그라운드 게임이 진행 중입니다.");
+    // 이미 자동 게임이 진행 중인지 확인
+    if (autoGameState.isActive) {
+      return socket.emit("error", "이미 자동 게임이 진행 중입니다.");
     }
 
     // 현재 베팅이나 게임이 진행 중인지 확인
@@ -1932,72 +2036,109 @@ io.on("connection", (socket) => {
       );
     }
 
-    // 유효한 게임 수인지 확인
-    if (!maxGames || maxGames < 1 || maxGames > 1000) {
-      return socket.emit("error", "게임 수는 1회에서 1000회 사이여야 합니다.");
+    // 유효한 게임 수인지 확인 (0은 무제한)
+    if (maxGames < 0 || maxGames > 1000) {
+      return socket.emit(
+        "error",
+        "게임 수는 0회(무제한)에서 1000회 사이여야 합니다."
+      );
     }
 
-    // 백그라운드 게임 상태 설정
-    backgroundGameState.isActive = true;
-    backgroundGameState.gameCount = 0;
-    backgroundGameState.maxGames = maxGames;
-    backgroundGameState.adminSocketId = socket.id;
+    // 자동 게임 상태 설정
+    autoGameState.isActive = true;
+    autoGameState.gameCount = 0;
+    autoGameState.maxGames = maxGames;
+    autoGameState.adminSocketId = socket.id;
 
     // 시작 확인 메시지 전송
-    socket.emit("background_game_started", {
-      message: `백그라운드 게임이 시작되었습니다. (총 ${maxGames}회)`,
+    const gameTypeText = maxGames === 0 ? "무제한" : `${maxGames}회`;
+    socket.emit("auto_game_started", {
+      message: `자동 게임이 시작되었습니다. (${gameTypeText})`,
       maxGames: maxGames,
       gameCount: 0,
     });
 
     // 첫 번째 베팅 시작 (1초 후)
     setTimeout(() => {
-      if (backgroundGameState.isActive) {
-        startBackgroundBetting();
+      if (autoGameState.isActive) {
+        startAutoBetting();
       }
     }, 1000);
   });
 
-  // 백그라운드 게임 중지 이벤트 (관리자 전용)
-  socket.on("stop_background_game", () => {
-    if (!backgroundGameState.isActive) {
-      return socket.emit("error", "백그라운드 게임이 진행 중이지 않습니다.");
+  // 자동 게임 중지 이벤트 (관리자 전용)
+  socket.on("stop_auto_game", () => {
+    if (!autoGameState.isActive) {
+      return socket.emit("error", "자동 게임이 진행 중이지 않습니다.");
     }
 
-    stopBackgroundGame();
-    socket.emit("background_game_stopped", {
-      message: `백그라운드 게임이 중지되었습니다. (완료된 게임: ${backgroundGameState.gameCount}/${backgroundGameState.maxGames})`,
-      gameCount: backgroundGameState.gameCount,
-      maxGames: backgroundGameState.maxGames,
+    stopAutoGame();
+    const gameTypeText =
+      autoGameState.maxGames === 0 ? "무제한" : autoGameState.maxGames;
+    socket.emit("auto_game_stopped", {
+      message: `자동 게임이 중지되었습니다. (완료된 게임: ${autoGameState.gameCount}/${gameTypeText})`,
+      gameCount: autoGameState.gameCount,
+      maxGames: autoGameState.maxGames,
     });
   });
 
-  // 백그라운드 게임 상태 요청 이벤트
-  socket.on("get_background_game_status", () => {
-    socket.emit("background_game_status", {
-      isActive: backgroundGameState.isActive,
-      gameCount: backgroundGameState.gameCount,
-      maxGames: backgroundGameState.maxGames,
+  // 자동 게임 상태 요청 이벤트
+  socket.on("get_auto_game_status", () => {
+    socket.emit("auto_game_status", {
+      isActive: autoGameState.isActive,
+      gameCount: autoGameState.gameCount,
+      maxGames: autoGameState.maxGames,
     });
   });
 
-  // 베팅 데이터 수신
-  // 베팅 처리 큐와 디바운싱을 위한 변수
-  let bettingUpdateQueue = new Map();
-  let bettingUpdateTimer = null;
-
-  // 배치 업데이트 함수
-  const processBettingUpdates = () => {
-    if (bettingUpdateQueue.size > 0) {
-      // 모든 클라이언트에게 업데이트된 통계 전송
-      io.emit("new_bet", {
-        stats: currentBettingStats,
-        batchUpdate: true,
+  // 임시 베팅 처리 함수
+  const processTempBetting = (userId, choice, amount, username) => {
+    // 임시 베팅 저장소에서 사용자 베팅 정보 가져오기
+    if (!tempBets.has(userId)) {
+      tempBets.set(userId, {
+        username: username,
+        bets: {},
+        totalAmount: 0,
       });
-      bettingUpdateQueue.clear();
+    }
+
+    const userTempBets = tempBets.get(userId);
+
+    // 기존 베팅에 추가
+    if (!userTempBets.bets[choice]) {
+      userTempBets.bets[choice] = 0;
+    }
+    userTempBets.bets[choice] += amount;
+    userTempBets.totalAmount += amount;
+
+    return userTempBets;
+  };
+
+  // 베팅 통계 업데이트 함수
+  const updateBettingStats = () => {
+    // 통계 초기화
+    currentBettingStats = {
+      player: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      tie: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      player_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+      banker_pair: { count: 0, total: 0, bettor_count: 0, total_bet_amount: 0 },
+    };
+
+    // 임시 베팅에서 통계 계산
+    for (const [userId, userData] of tempBets.entries()) {
+      for (const [choice, amount] of Object.entries(userData.bets)) {
+        if (currentBettingStats[choice]) {
+          currentBettingStats[choice].count++;
+          currentBettingStats[choice].total += amount;
+          currentBettingStats[choice].bettor_count++;
+          currentBettingStats[choice].total_bet_amount += amount;
+        }
+      }
     }
   };
 
+  // 베팅 데이터 수신 (새로운 임시 베팅 시스템)
   socket.on("place_bet", async (betData) => {
     const { choice, amount, token } = betData;
 
@@ -2013,7 +2154,7 @@ io.on("connection", (socket) => {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
 
-      // 메모리 캐시에서 사용자 정보 확인 (있으면)
+      // 사용자 정보 확인 (잔액 체크용)
       let userData = userCache.get(userId);
       let user;
 
@@ -2049,85 +2190,52 @@ io.on("connection", (socket) => {
         );
       }
 
-      if (user.balance < amount) {
+      // 현재 임시 베팅 총액 계산
+      const currentTempBetAmount = tempBets.has(userId)
+        ? tempBets.get(userId).totalAmount
+        : 0;
+      const totalBetAmount = currentTempBetAmount + amount;
+
+      if (user.balance < totalBetAmount) {
         return socket.emit("error", "잔액이 부족합니다.");
       }
 
-      // 즉시 잔액 차감 (메모리에서)
-      user.balance -= amount;
-      user.rollingWagered = (user.rollingWagered || 0) + amount;
-      user.cachedAt = Date.now();
-      userCache.set(userId, user);
-
-      // DB 저장은 비동기로 처리 (await 제거)
-      User.findByIdAndUpdate(userId, {
-        $inc: {
-          balance: -amount,
-          rollingWagered: amount,
-        },
-      })
-        .exec()
-        .catch((err) => {
-          console.error("DB 업데이트 에러:", err);
-        });
-
-      // 베팅 저장
-      const bet = {
+      // 임시 베팅 처리 (메모리에만 저장)
+      const userTempBets = processTempBetting(
         userId,
         choice,
         amount,
-        username: user.username,
-      };
-
-      // 사용자가 해당 선택지에 이 베팅 이전에 다른 베팅을 했는지 확인
-      const previousBetsOnThisChoiceByThisUser = currentBets.find(
-        (b) => b.userId === userId && b.choice === choice
+        user.username
       );
 
-      currentBets.push(bet);
+      // 베팅 통계 업데이트
+      updateBettingStats();
 
-      // 통계 업데이트
-      currentBettingStats[choice].count++;
-      currentBettingStats[choice].total += amount;
-
-      if (!previousBetsOnThisChoiceByThisUser) {
-        currentBettingStats[choice].bettor_count++;
-      }
-      currentBettingStats[choice].total_bet_amount += amount;
-
-      // 즉시 성공 응답 (사용자 경험 개선)
+      // 즉시 성공 응답
       socket.emit("bet_success", {
-        message: "베팅이 완료되었습니다.",
-        newBalance: user.balance,
+        message: "베팅이 추가되었습니다.",
+        newBalance: user.balance - userTempBets.totalAmount, // 임시 잔액 표시
       });
 
-      // 개인 베팅 정보 즉시 업데이트
-      const myCurrentBetsOnChoices = currentBets.reduce((acc, curBet) => {
-        if (curBet.userId === userId) {
-          acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
-        }
-        return acc;
-      }, {});
-      socket.emit("my_bets_updated", { myCurrentBetsOnChoices });
+      // 개인 베팅 정보 업데이트
+      socket.emit("my_bets_updated", {
+        myCurrentBetsOnChoices: userTempBets.bets,
+      });
 
-      // 배치 업데이트 큐에 추가
-      bettingUpdateQueue.set(Date.now(), {
-        choice,
+      // 모든 클라이언트에게 베팅 통계 업데이트 전송
+      io.emit("new_bet", {
         stats: currentBettingStats,
+        choice: choice,
       });
-
-      // 디바운싱: 100ms 후에 배치 업데이트
-      if (bettingUpdateTimer) {
-        clearTimeout(bettingUpdateTimer);
-      }
-      bettingUpdateTimer = setTimeout(processBettingUpdates, 100);
     } catch (err) {
+      console.error("임시 베팅 처리 에러:", err);
       socket.emit("error", "베팅 처리 중 오류가 발생했습니다.");
     }
   });
 
+  // 임시 베팅 취소 (전체 초기화)
   socket.on("cancel_bet", async (data) => {
-    const { token } = data; // 토큰만 받아도 사용자 식별 가능
+    const { token } = data;
 
     if (!bettingActive) {
       return socket.emit("error", "베팅 시간이 종료되어 취소할 수 없습니다.");
@@ -2141,7 +2249,7 @@ io.on("connection", (socket) => {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
 
-      // 메모리 캐시에서 사용자 정보 확인 (place_bet과 동일한 방식)
+      // 사용자 정보 확인
       let userData = userCache.get(userId);
       let user;
 
@@ -2160,103 +2268,38 @@ io.on("connection", (socket) => {
         userCache.set(userId, user);
       }
 
-      // currentBets 배열에서 해당 사용자의 가장 마지막 베팅 찾기
-      let lastBetIndex = -1;
-      for (let i = currentBets.length - 1; i >= 0; i--) {
-        if (currentBets[i].userId === userId) {
-          lastBetIndex = i;
-          break;
-        }
+      // 임시 베팅이 있는지 확인
+      if (!tempBets.has(userId)) {
+        return socket.emit("error", "취소할 베팅이 없습니다.");
       }
 
-      if (lastBetIndex === -1) {
-        return socket.emit("error", "취소할 베팅을 찾을 수 없습니다.");
-      }
+      const userTempBets = tempBets.get(userId);
+      const cancelledAmount = userTempBets.totalAmount;
 
-      const betToCancel = currentBets[lastBetIndex];
+      // 임시 베팅 전체 삭제
+      tempBets.delete(userId);
 
-      // currentBets에서 해당 베팅 제거
-      currentBets.splice(lastBetIndex, 1);
+      // 베팅 통계 재계산
+      updateBettingStats();
 
-      // 즉시 잔액 복원 (메모리에서)
-      user.balance += betToCancel.amount;
-      user.rollingWagered = Math.max(
-        0,
-        (user.rollingWagered || 0) - betToCancel.amount
-      );
-      user.cachedAt = Date.now();
-      userCache.set(userId, user);
+      // 베팅 취소 성공 응답
+      socket.emit("bet_cancelled_success", {
+        message: `모든 베팅이 취소되었습니다. (총 ${cancelledAmount.toLocaleString()}원)`,
+        newBalance: user.balance, // 원래 잔액으로 복원
+        cancelledAmount: cancelledAmount,
+      });
 
-      // DB 저장은 비동기로 처리 (await 제거)
-      User.findByIdAndUpdate(userId, {
-        $inc: {
-          balance: betToCancel.amount,
-          rollingWagered: -betToCancel.amount,
-        },
-      })
-        .exec()
-        .catch((err) => {
-          console.error("베팅 취소 DB 업데이트 에러:", err);
-        });
+      // 개인 베팅 정보 초기화
+      socket.emit("my_bets_updated", {
+        myCurrentBetsOnChoices: {},
+      });
 
-      // 베팅 통계 업데이트 (차감)
-      if (currentBettingStats[betToCancel.choice]) {
-        currentBettingStats[betToCancel.choice].count = Math.max(
-          0,
-          currentBettingStats[betToCancel.choice].count - 1
-        );
-        currentBettingStats[betToCancel.choice].total = Math.max(
-          0,
-          currentBettingStats[betToCancel.choice].total - betToCancel.amount
-        );
-
-        // 취소 후, 해당 유저가 이 선택지에 다른 베팅을 가지고 있는지 확인
-        const otherBetsOnThisChoiceFromUserAfterCancel = currentBets.find(
-          (b) => b.userId === userId && b.choice === betToCancel.choice
-        );
-
-        if (!otherBetsOnThisChoiceFromUserAfterCancel) {
-          // 다른 베팅이 없다면 bettor_count 감소
-          currentBettingStats[betToCancel.choice].bettor_count = Math.max(
-            0,
-            currentBettingStats[betToCancel.choice].bettor_count - 1
-          );
-        }
-        currentBettingStats[betToCancel.choice].total_bet_amount = Math.max(
-          0,
-          currentBettingStats[betToCancel.choice].total_bet_amount -
-            betToCancel.amount
-        );
-      }
-
-      // 모든 클라이언트에게 업데이트된 베팅 통계 전송
+      // 모든 클라이언트에게 베팅 통계 업데이트 전송
       io.emit("new_bet", {
-        choice: betToCancel.choice, // 어떤 베팅이 영향을 받았는지 알려주기 위함 (UI 업데이트용)
         stats: currentBettingStats,
       });
-
-      // 해당 사용자에게 베팅 취소 성공 알림 및 업데이트된 잔액 전송
-      socket.emit("bet_cancelled_success", {
-        message: `베팅(선택: ${betToCancel.choice}, 금액: ${betToCancel.amount}원)이 취소되었습니다.`,
-        newBalance: user.balance,
-        cancelledBet: betToCancel,
-      });
-      // 베팅 취소는 개별 사용자만 영향을 받으므로 update_coins 제거
-
-      // 해당 유저의 선택지별 총 베팅액 다시 계산하여 전송
-      const myCurrentBetsOnChoicesAfterCancel = currentBets.reduce(
-        (acc, curBet) => {
-          if (curBet.userId === userId) {
-            acc[curBet.choice] = (acc[curBet.choice] || 0) + curBet.amount;
-          }
-          return acc;
-        },
-        {}
-      );
-      socket.emit("my_bets_updated", {
-        myCurrentBetsOnChoices: myCurrentBetsOnChoicesAfterCancel,
-      });
     } catch (err) {
+      console.error("임시 베팅 취소 에러:", err);
       socket.emit("error", "베팅 취소 처리 중 오류가 발생했습니다.");
     }
   });
@@ -2865,6 +2908,241 @@ app.get(
     }
   }
 );
+
+// 하우스 통계 API (총 이득/손실)
+app.get("/api/admin/house-statistics", auth(["admin"]), async (req, res) => {
+  try {
+    // 모든 사용자의 베팅 히스토리 조회
+    const users = await User.find().select("username bettingHistory");
+
+    // 모든 베팅 기록을 하나의 배열로 통합
+    const allBets = [];
+    users.forEach((user) => {
+      if (user.bettingHistory && user.bettingHistory.length > 0) {
+        user.bettingHistory.forEach((bet) => {
+          allBets.push({
+            ...bet.toObject(),
+            username: user.username,
+          });
+        });
+      }
+    });
+
+    // 총 베팅액 계산
+    const totalBetAmount = allBets.reduce(
+      (sum, bet) => sum + (bet.amount || 0),
+      0
+    );
+
+    // 총 지급액 계산 (승리한 베팅들의 지급액)
+    const totalWinAmount = allBets
+      .filter((bet) => bet.result === "win")
+      .reduce((sum, bet) => {
+        const profit = calculateProfit(bet);
+        return sum + profit;
+      }, 0);
+
+    // 베팅 게임에서의 하우스 수익 = 총 베팅액 - 총 지급액
+    const bettingHouseProfit = totalBetAmount - totalWinAmount;
+
+    // 충전/환전 통계 계산
+    const depositsCollection =
+      mongoose.connection.db.collection("depositrequests");
+    const exchangeRequestsCollection =
+      mongoose.connection.db.collection("exchangerequests");
+
+    // 승인된 충전 총액
+    const approvedDeposits = await depositsCollection
+      .find({ status: "approved" })
+      .toArray();
+    const totalDepositAmount = approvedDeposits.reduce(
+      (sum, dep) => sum + (dep.amount || 0),
+      0
+    );
+
+    // 승인된 환전 총액 (실제 지급액)
+    const approvedExchanges = await exchangeRequestsCollection
+      .find({ status: "approved" })
+      .toArray();
+    const totalExchangeAmount = approvedExchanges.reduce(
+      (sum, ex) => sum + (ex.actualAmount || 0),
+      0
+    );
+
+    // 환전 수수료 총액
+    const totalExchangeFees = approvedExchanges.reduce(
+      (sum, ex) => sum + (ex.fee || 0),
+      0
+    );
+
+    // 현재 모든 사용자 잔액 총합
+    const allUsers = await User.find().select("balance");
+    const totalUserBalance = allUsers.reduce(
+      (sum, user) => sum + (user.balance || 0),
+      0
+    );
+
+    // 실제 하우스 순이익 계산
+    // 방법 1: 충전액 - 환전액 - 현재 사용자 잔액 총합
+    const realHouseProfit =
+      totalDepositAmount - totalExchangeAmount - totalUserBalance;
+
+    // 방법 2: 베팅 수익 + 환전 수수료 (검증용)
+    const calculatedHouseProfit = bettingHouseProfit + totalExchangeFees;
+
+    // 게임별 통계
+    const gameResults = await Game.find();
+    const gameStats = {
+      totalGames: gameResults.length,
+      playerWins: gameResults.filter((game) => game.result === "player").length,
+      bankerWins: gameResults.filter((game) => game.result === "banker").length,
+      ties: gameResults.filter((game) => game.result === "tie").length,
+    };
+
+    // 베팅 선택별 통계
+    const betStats = {};
+    const choices = ["player", "banker", "tie", "player_pair", "banker_pair"];
+
+    choices.forEach((choice) => {
+      const betsForChoice = allBets.filter((bet) => bet.choice === choice);
+      const winBetsForChoice = betsForChoice.filter(
+        (bet) => bet.result === "win"
+      );
+
+      const totalAmount = betsForChoice.reduce(
+        (sum, bet) => sum + (bet.amount || 0),
+        0
+      );
+      const winAmount = winBetsForChoice.reduce((sum, bet) => {
+        const profit = calculateProfit(bet);
+        return sum + profit;
+      }, 0);
+
+      betStats[choice] = {
+        totalBets: betsForChoice.length,
+        totalAmount,
+        winCount: winBetsForChoice.length,
+        winAmount,
+        houseProfit: totalAmount - winAmount,
+      };
+    });
+
+    // 수익률 계산
+    const bettingProfitMargin =
+      totalBetAmount > 0
+        ? ((bettingHouseProfit / totalBetAmount) * 100).toFixed(2)
+        : 0;
+
+    // 실제 수익률 계산 (총 충전액 대비)
+    const realProfitMargin =
+      totalDepositAmount > 0
+        ? ((realHouseProfit / totalDepositAmount) * 100).toFixed(2)
+        : 0;
+
+    // 오늘 통계
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayBets = allBets.filter((bet) => {
+      const betDate = new Date(bet.date);
+      return betDate >= today;
+    });
+    const todayBetAmount = todayBets.reduce(
+      (sum, bet) => sum + (bet.amount || 0),
+      0
+    );
+    const todayWinAmount = todayBets
+      .filter((bet) => bet.result === "win")
+      .reduce((sum, bet) => {
+        const profit = calculateProfit(bet);
+        return sum + profit;
+      }, 0);
+    const todayHouseProfit = todayBetAmount - todayWinAmount;
+
+    // 이번 주 통계
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const weekBets = allBets.filter((bet) => {
+      const betDate = new Date(bet.date);
+      return betDate >= weekStart;
+    });
+    const weekBetAmount = weekBets.reduce(
+      (sum, bet) => sum + (bet.amount || 0),
+      0
+    );
+    const weekWinAmount = weekBets
+      .filter((bet) => bet.result === "win")
+      .reduce((sum, bet) => {
+        const profit = calculateProfit(bet);
+        return sum + profit;
+      }, 0);
+    const weekHouseProfit = weekBetAmount - weekWinAmount;
+
+    // 사용자별 기여도 (상위 10명)
+    const userContributions = {};
+    allBets.forEach((bet) => {
+      if (!userContributions[bet.username]) {
+        userContributions[bet.username] = {
+          totalBet: 0,
+          totalWin: 0,
+          contribution: 0,
+        };
+      }
+      userContributions[bet.username].totalBet += bet.amount || 0;
+      if (bet.result === "win") {
+        const profit = calculateProfit(bet);
+        userContributions[bet.username].totalWin += profit;
+      }
+      userContributions[bet.username].contribution =
+        userContributions[bet.username].totalBet -
+        userContributions[bet.username].totalWin;
+    });
+
+    const topContributors = Object.entries(userContributions)
+      .map(([username, stats]) => ({ username, ...stats }))
+      .sort((a, b) => b.contribution - a.contribution)
+      .slice(0, 10);
+
+    res.json({
+      overall: {
+        totalBetAmount,
+        totalWinAmount,
+        bettingHouseProfit,
+        bettingProfitMargin: parseFloat(bettingProfitMargin),
+        realHouseProfit,
+        realProfitMargin: parseFloat(realProfitMargin),
+        totalBets: allBets.length,
+      },
+      financial: {
+        totalDepositAmount,
+        totalExchangeAmount,
+        totalExchangeFees,
+        totalUserBalance,
+        calculatedHouseProfit, // 검증용
+      },
+      gameStats,
+      betStats,
+      period: {
+        today: {
+          betAmount: todayBetAmount,
+          winAmount: todayWinAmount,
+          houseProfit: todayHouseProfit,
+          betCount: todayBets.length,
+        },
+        week: {
+          betAmount: weekBetAmount,
+          winAmount: weekWinAmount,
+          houseProfit: weekHouseProfit,
+          betCount: weekBets.length,
+        },
+      },
+      topContributors,
+    });
+  } catch (err) {
+    console.error("하우스 통계 조회 오류:", err);
+    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+  }
+});
 
 // 충전 요청 스키마 추가
 const depositRequestSchema = new mongoose.Schema({
