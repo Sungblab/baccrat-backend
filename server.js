@@ -53,7 +53,7 @@ const userSchema = new mongoose.Schema({
   },
   balance: {
     type: Number,
-    default: 10000,
+    default: 0,
   },
   role: {
     type: String,
@@ -187,7 +187,7 @@ app.get("/api/auth/user-info", auth(), async (req, res) => {
     // 환전 가능 금액 계산: 롤링 요구량 달성 시에만 환전 가능
     const rollingDeposit = user.rollingDeposit || 0;
     const rollingWagered = user.rollingWagered || 0;
-    const rollingRequirement = rollingDeposit * 1.5;
+    const rollingRequirement = rollingDeposit * 1.0;
 
     // 롤링 요구량을 달성한 경우에만 환전 가능
     const maxExchangeAmount =
@@ -319,7 +319,7 @@ app.get("/api/admin/user-detail/:userId", auth("admin"), async (req, res) => {
     // 롤링 정보 (실제 서버 데이터)
     const rollingDeposit = user.rollingDeposit || 0;
     const rollingWagered = user.rollingWagered || 0;
-    const rollingRequirement = rollingDeposit * 1.5;
+    const rollingRequirement = rollingDeposit * 1.0;
     const rollingProgress =
       rollingRequirement > 0
         ? Math.min(100, (rollingWagered / rollingRequirement) * 100)
@@ -2595,11 +2595,11 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
     }
 
-    // 최소 환전 가능 금액 체크 (5,000원)
-    if (amount < 5000) {
+    // 최소 환전 가능 금액 체크 (30,000원)
+    if (amount < 30000) {
       return res
         .status(400)
-        .json({ message: "최소 5,000원부터 환전 가능합니다." });
+        .json({ message: "최소 30,000원부터 환전 가능합니다." });
     }
 
     if (user.balance < amount) {
@@ -2609,7 +2609,7 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
     // 환전 가능 금액 계산: 롤링 요구량 달성 시에만 환전 가능
     const rollingDeposit = user.rollingDeposit || 0;
     const rollingWagered = user.rollingWagered || 0;
-    const rollingRequirement = rollingDeposit * 1.5;
+    const rollingRequirement = rollingDeposit * 1.0;
 
     // 롤링 요구량을 달성한 경우에만 환전 가능
     const maxExchangeAmount =
@@ -2621,9 +2621,9 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       });
     }
 
-    // 새로운 수수료 계산 (환전액의 10%)
-    const fee = Math.floor(amount * 0.1);
-    const actualAmount = amount - fee;
+    // 새로운 수수료 계산 (0%)
+    const fee = 0;
+    const actualAmount = amount;
 
     // 즉시 잔액 차감 (중복 환전 방지)
     user.balance -= amount;
@@ -2746,7 +2746,7 @@ app.get("/api/user/detailed-info", auth(), async (req, res) => {
     const overallProfit = user.balance + totalExchanged - totalDeposited;
 
     // 롤링 정보
-    const rollingRequirement = (user.rollingDeposit || 0) * 1.5;
+    const rollingRequirement = (user.rollingDeposit || 0) * 1.0;
     const rollingWagered = user.rollingWagered || 0;
     const rollingProgress =
       rollingRequirement > 0
@@ -3256,10 +3256,10 @@ app.post("/api/deposit/request", auth(), async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
     }
-    if (amount < 10000) {
+    if (amount < 20000) {
       return res
         .status(400)
-        .json({ message: "최소 10,000원부터 충전 가능합니다." });
+        .json({ message: "최소 20,000원부터 충전 가능합니다." });
     }
 
     const depositRequest = new DepositRequest({
@@ -3511,7 +3511,7 @@ app.post("/api/transfer/send", auth(), async (req, res) => {
         .json({ message: "자기 자신에게 송금할 수 없습니다." });
     }
 
-    const fee = Math.floor(amount * 0.05); // 5% 수수료
+    const fee = 0; // 0% 수수료
     const totalAmount = amount + fee;
 
     if (fromUser.balance < totalAmount) {
@@ -3712,7 +3712,7 @@ app.post(
         return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
       }
 
-      const fee = Math.floor(request.amount * 0.05); // 5% 수수료
+      const fee = 0; // 0% 수수료
       const totalAmount = request.amount + fee;
 
       if (fromUser.balance < totalAmount) {
