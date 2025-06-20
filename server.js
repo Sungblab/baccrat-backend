@@ -891,6 +891,27 @@ class BaccaratGame {
         bankerHand.push({ suit: "C", value: "4", id: "4C_p3" });
         bankerHand.push({ suit: "S", value: "3", id: "3S_p3" }); // 7
         break;
+      case 4: // 드라마틱 역전 (낮은 점수에서 세 번째 카드로 9)
+        playerHand.push({ suit: "H", value: "A", id: "AH_p4" });
+        playerHand.push({ suit: "D", value: "2", id: "2D_p4" }); // 3
+        playerHand.push({ suit: "S", value: "6", id: "6S_p4" }); // 3+6=9
+        bankerHand.push({ suit: "C", value: "3", id: "3C_p4" });
+        bankerHand.push({ suit: "H", value: "5", id: "5H_p4" }); // 8로 스탠드
+        break;
+      case 5: // 페어가 있는 승부
+        playerHand.push({ suit: "H", value: "7", id: "7H_p5" });
+        playerHand.push({ suit: "D", value: "7", id: "7D_p5" }); // 4 (페어)
+        playerHand.push({ suit: "S", value: "5", id: "5S_p5" }); // 4+5=9
+        bankerHand.push({ suit: "C", value: "6", id: "6C_p5" });
+        bankerHand.push({ suit: "H", value: "2", id: "2H_p5" }); // 8
+        break;
+      case 6: // 미라클 승부 (0에서 9로)
+        playerHand.push({ suit: "H", value: "K", id: "KH_p6" });
+        playerHand.push({ suit: "D", value: "Q", id: "QD_p6" }); // 0
+        playerHand.push({ suit: "S", value: "9", id: "9S_p6" }); // 0+9=9
+        bankerHand.push({ suit: "C", value: "4", id: "4C_p6" });
+        bankerHand.push({ suit: "H", value: "4", id: "4H_p6" }); // 8
+        break;
       default:
         // 기본 패턴
         playerHand.push({ suit: "H", value: "9", id: "9H_default" });
@@ -923,6 +944,29 @@ class BaccaratGame {
         bankerHand.push({ suit: "C", value: "7", id: "7C_b3" });
         bankerHand.push({ suit: "S", value: "2", id: "2S_b3" }); // 9
         break;
+      case 4: // 뱅커 룰 복잡한 승부
+        playerHand.push({ suit: "H", value: "5", id: "5H_b4" });
+        playerHand.push({ suit: "D", value: "A", id: "AD_b4" }); // 6
+        playerHand.push({ suit: "S", value: "2", id: "2S_b4" }); // 6+2=8
+        bankerHand.push({ suit: "C", value: "4", id: "4C_b4" });
+        bankerHand.push({ suit: "H", value: "4", id: "4H_b4" }); // 8
+        bankerHand.push({ suit: "D", value: "A", id: "AD_b4" }); // 8+1=9
+        break;
+      case 5: // 페어로 시작해서 승리
+        playerHand.push({ suit: "H", value: "3", id: "3H_b5" });
+        playerHand.push({ suit: "D", value: "3", id: "3D_b5" }); // 6 (페어)
+        bankerHand.push({ suit: "C", value: "8", id: "8C_b5" });
+        bankerHand.push({ suit: "S", value: "8", id: "8S_b5" }); // 6 (페어)
+        bankerHand.push({ suit: "H", value: "3", id: "3H_b5" }); // 6+3=9
+        break;
+      case 6: // 극적인 세 번째 카드 승부
+        playerHand.push({ suit: "H", value: "A", id: "AH_b6" });
+        playerHand.push({ suit: "D", value: "A", id: "AD_b6" }); // 2
+        playerHand.push({ suit: "S", value: "5", id: "5S_b6" }); // 2+5=7
+        bankerHand.push({ suit: "C", value: "2", id: "2C_b6" });
+        bankerHand.push({ suit: "H", value: "4", id: "4H_b6" }); // 6
+        bankerHand.push({ suit: "D", value: "2", id: "2D_b6" }); // 6+2=8
+        break;
       default:
         // 기본 패턴
         playerHand.push({ suit: "H", value: "7", id: "7H_default" });
@@ -954,6 +998,26 @@ class BaccaratGame {
         playerHand.push({ suit: "D", value: "0", id: "0D_t3" }); // 3
         bankerHand.push({ suit: "C", value: "2", id: "2C_t3" });
         bankerHand.push({ suit: "S", value: "A", id: "AS_t3" }); // 3
+        break;
+      case 4: // 내추럴 9 타이 (드문 경우)
+        playerHand.push({ suit: "H", value: "9", id: "9H_t4" });
+        playerHand.push({ suit: "D", value: "0", id: "0D_t4" });
+        bankerHand.push({ suit: "C", value: "9", id: "9C_t4" });
+        bankerHand.push({ suit: "S", value: "0", id: "0S_t4" });
+        break;
+      case 5: // 페어 타이 (둘 다 페어)
+        playerHand.push({ suit: "H", value: "5", id: "5H_t5" });
+        playerHand.push({ suit: "D", value: "5", id: "5D_t5" }); // 0 (페어)
+        bankerHand.push({ suit: "C", value: "K", id: "KC_t5" });
+        bankerHand.push({ suit: "S", value: "Q", id: "QS_t5" }); // 0 (둘 다 0)
+        break;
+      case 6: // 복잡한 세 번째 카드 타이
+        playerHand.push({ suit: "H", value: "A", id: "AH_t6" });
+        playerHand.push({ suit: "D", value: "3", id: "3D_t6" }); // 4
+        playerHand.push({ suit: "S", value: "2", id: "2S_t6" }); // 4+2=6
+        bankerHand.push({ suit: "C", value: "2", id: "2C_t6" });
+        bankerHand.push({ suit: "H", value: "2", id: "2H_t6" }); // 4
+        bankerHand.push({ suit: "D", value: "2", id: "2D_t6" }); // 4+2=6
         break;
       default:
         // 기본 패턴
@@ -1976,6 +2040,11 @@ io.on("connection", (socket) => {
   socket.on("admin_fix_result", (data) => {
     const { result, pattern } = data;
 
+    // 관리자 권한 확인
+    if (!socket.userRole || socket.userRole !== 'admin') {
+      return socket.emit("error", "관리자 권한이 필요합니다.");
+    }
+
     // 베팅이 활성화되어 있을 때만 조작 가능
     if (!bettingActive) {
       return socket.emit("error", "베팅 시간이 아닙니다.");
@@ -1995,34 +2064,18 @@ io.on("connection", (socket) => {
     // 조작된 결과 설정
     fixedGameResult = fixedResultWithPattern;
 
-    // 패턴 설명 생성
-    const patternDescriptions = {
-      player_1: "내추럴 9 vs 8",
-      player_2: "세 번째 카드로 역전승",
-      player_3: "간발의 차이로 승리",
-      banker_1: "내추럴 9 vs 8",
-      banker_2: "뱅커 룰에 의한 승리",
-      banker_3: "압도적 승리",
-      tie_1: "내추럴 8 타이",
-      tie_2: "세 번째 카드 후 타이",
-      tie_3: "낮은 점수 타이",
-    };
-
     const resultName =
       baseResult === "player"
         ? "플레이어"
         : baseResult === "banker"
         ? "뱅커"
         : "타이";
-    const patternDesc =
-      patternDescriptions[fixedResultWithPattern] || "기본 패턴";
 
     // 관리자에게 확인 메시지 전송
     socket.emit("result_fixed", {
-      message: `다음 게임 결과가 ${resultName} 승리로 설정되었습니다.\n패턴: ${patternDesc}`,
+      message: `다음 게임 결과가 ${resultName} 승리로 설정되었습니다.`,
       fixedResult: fixedResultWithPattern,
       pattern: patternNum,
-      patternDescription: patternDesc,
     });
   });
 
