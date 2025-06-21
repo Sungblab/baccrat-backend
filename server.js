@@ -1255,6 +1255,10 @@ async function processTempBetsToReal() {
 
 // 자동 베팅 시작 함수 (통합)
 function startAutoBetting() {
+  console.log(
+    "🤖 자동 베팅 시작 호출됨, 자동게임 상태:",
+    autoGameState.isActive
+  );
   if (!autoGameState.isActive) return;
 
   const bettingDuration = 16; // 16초
@@ -1304,8 +1308,19 @@ function startAutoBetting() {
 function startAutoGame() {
   if (!autoGameState.isActive) return;
 
-  // 게임 실행
-  const gameResult = baccaratGame.playGame();
+  // 게임 실행 (조작된 결과가 있으면 그것을 사용)
+  let gameResult;
+  if (fixedGameResult) {
+    console.log("🎮 자동게임: 조작된 게임 실행:", fixedGameResult);
+    gameResult = baccaratGame.playFixedGame(fixedGameResult);
+    console.log("🎯 자동게임: 조작 게임 결과:", gameResult.result);
+    fixedGameResult = null; // 사용 후 초기화
+    console.log("🔄 자동게임: 조작 결과 초기화 완료");
+  } else {
+    console.log("🎲 자동게임: 일반 게임 실행");
+    gameResult = baccaratGame.playGame();
+    console.log("🎯 자동게임: 일반 게임 결과:", gameResult.result);
+  }
 
   // 현재 게임 결과 저장 (베팅 통계 포함)
   const processedGameResult = {
