@@ -2041,7 +2041,7 @@ io.on("connection", (socket) => {
     const { result, pattern } = data;
 
     // 관리자 권한 확인
-    if (!socket.userRole || socket.userRole !== 'admin') {
+    if (!socket.userRole || socket.userRole !== "admin") {
       return socket.emit("error", "관리자 권한이 필요합니다.");
     }
 
@@ -2569,6 +2569,9 @@ const exchangeRequestSchema = new mongoose.Schema({
   actualAmount: Number, // 원 단위로 가정
   fee: Number, // 원 단위로 가정
   rollingPoint: { type: Number, default: 0 },
+  bankName: String, // 은행명
+  accountNumber: String, // 계좌번호
+  accountHolder: String, // 예금주명
   status: {
     type: String,
     enum: ["pending", "approved", "rejected"],
@@ -2587,7 +2590,7 @@ const ExchangeRequest = mongoose.model(
 
 // 환전 신청 API 수정
 app.post("/api/exchange/request", auth(), async (req, res) => {
-  const { amount } = req.body; // amount는 원 단위
+  const { amount, bankName, accountNumber, accountHolder } = req.body; // amount는 원 단위
 
   try {
     const user = await User.findById(req.user.id);
@@ -2595,11 +2598,17 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
     }
 
-    // 최소 환전 가능 금액 체크 (30,000원)
-    if (amount < 30000) {
+    // 입력값 검증
+    if (!amount || amount < 30000) {
       return res
         .status(400)
         .json({ message: "최소 30,000원부터 환전 가능합니다." });
+    }
+
+    if (!bankName || !accountNumber || !accountHolder) {
+      return res
+        .status(400)
+        .json({ message: "은행명, 계좌번호, 예금주명을 모두 입력해주세요." });
     }
 
     if (user.balance < amount) {
@@ -2629,7 +2638,7 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
     user.balance -= amount;
     await user.save();
 
-    // 환전 요청 생성
+    // 환전 요청 생성 (계좌 정보 포함)
     const exchangeRequest = new ExchangeRequest({
       userId: user._id,
       username: user.username,
@@ -2637,6 +2646,9 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       actualAmount: actualAmount,
       fee,
       rollingPoint: user.rollingWagered || 0,
+      bankName: bankName.trim(),
+      accountNumber: accountNumber.trim(),
+      accountHolder: accountHolder.trim(),
     });
     await exchangeRequest.save();
 
@@ -2646,12 +2658,15 @@ app.post("/api/exchange/request", auth(), async (req, res) => {
       userSocket.emit("balance_updated", { newBalance: user.balance });
     }
 
-    // 모든 관리자에게 새로운 환전 요청 알림
+    // 모든 관리자에게 새로운 환전 요청 알림 (계좌 정보 포함)
     io.emit("new_exchange_request", {
       username: user.username,
       requestAmount: amount,
       actualAmount: actualAmount,
       fee,
+      bankName: bankName.trim(),
+      accountNumber: accountNumber.trim(),
+      accountHolder: accountHolder.trim(),
       createdAt: exchangeRequest.createdAt,
     });
 
