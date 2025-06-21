@@ -1763,7 +1763,16 @@ io.on("connection", (socket) => {
 
   // 관리자용 게임 시작 이벤트
   socket.on("admin_start_game", async () => {
+    console.log("🎮 admin_start_game 이벤트 받음");
+
+    // 이미 게임이 진행 중이면 무시
+    if (resultProcessing) {
+      console.log("❌ 이미 게임 진행 중, 무시");
+      return;
+    }
+
     if (bettingActive) {
+      console.log("🔴 베팅 종료 처리");
       bettingActive = false;
       bettingEndTime = null;
       io.emit("betting_closed");
