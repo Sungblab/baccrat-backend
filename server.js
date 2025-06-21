@@ -1592,12 +1592,18 @@ io.on("connection", (socket) => {
   }
 
   // 사용자 인증 및 소켓 등록
-  socket.on("authenticate", (token) => {
+  socket.on("authenticate", async (token) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       const userId = decoded.id;
-      userSockets.set(userId, socket);
-      socket.userId = userId;
+
+      // 사용자 정보 조회해서 권한 저장
+      const user = await User.findById(userId).select("role");
+      if (user) {
+        socket.userRole = user.role;
+        socket.userId = userId;
+        userSockets.set(userId, socket);
+      }
     } catch (err) {
       // 소켓 인증 실패
     }
@@ -1769,10 +1775,15 @@ io.on("connection", (socket) => {
     // 게임 실행 (조작된 결과가 있으면 그것을 사용)
     let gameResult;
     if (fixedGameResult) {
+      console.log("🎮 조작된 게임 실행:", fixedGameResult);
       gameResult = baccaratGame.playFixedGame(fixedGameResult);
+      console.log("🎯 조작 게임 결과:", gameResult.result);
       fixedGameResult = null; // 사용 후 초기화
+      console.log("🔄 조작 결과 초기화 완료");
     } else {
+      console.log("🎲 일반 게임 실행");
       gameResult = baccaratGame.playGame();
+      console.log("🎯 일반 게임 결과:", gameResult.result);
     }
 
     // 현재 게임 결과 저장 (베팅 통계 포함)
@@ -2038,15 +2049,20 @@ io.on("connection", (socket) => {
 
   // 승부 조작 이벤트 (관리자 전용)
   socket.on("admin_fix_result", (data) => {
+    console.log("🎯 서버: 조작 요청 받음:", data);
     const { result, pattern } = data;
 
     // 관리자 권한 확인
+    console.log("👤 사용자 권한:", socket.userRole);
     if (!socket.userRole || socket.userRole !== "admin") {
+      console.log("❌ 권한 없음");
       return socket.emit("error", "관리자 권한이 필요합니다.");
     }
 
     // 베팅이 활성화되어 있을 때만 조작 가능
+    console.log("🎲 베팅 상태:", bettingActive);
     if (!bettingActive) {
+      console.log("❌ 베팅 시간 아님");
       return socket.emit("error", "베팅 시간이 아닙니다.");
     }
 
@@ -2054,6 +2070,7 @@ io.on("connection", (socket) => {
     const validResults = ["player", "banker", "tie"];
     const baseResult = result.split("_")[0];
     if (!validResults.includes(baseResult)) {
+      console.log("❌ 유효하지 않은 결과:", baseResult);
       return socket.emit("error", "유효하지 않은 결과입니다.");
     }
 
@@ -2063,6 +2080,7 @@ io.on("connection", (socket) => {
 
     // 조작된 결과 설정
     fixedGameResult = fixedResultWithPattern;
+    console.log("✅ 조작 결과 설정 완료:", fixedGameResult);
 
     const resultName =
       baseResult === "player"
@@ -2077,6 +2095,7 @@ io.on("connection", (socket) => {
       fixedResult: fixedResultWithPattern,
       pattern: patternNum,
     });
+    console.log("📤 조작 설정 확인 메시지 전송 완료");
   });
 
   // 자동 게임 시작 이벤트 (관리자 전용) - 자동시작과 백그라운드 통합
