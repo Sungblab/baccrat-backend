@@ -879,11 +879,11 @@ class BaccaratGame {
         bankerHand.push({ suit: "S", value: "0", id: "0S_p1" });
         break;
       case 2: // 세 번째 카드로 역전승
-        playerHand.push({ suit: "H", value: "4", id: "4H_p2" });
-        playerHand.push({ suit: "D", value: "2", id: "2D_p2" });
-        playerHand.push({ suit: "S", value: "3", id: "3S_p2" }); // 6+3=9
+        playerHand.push({ suit: "H", value: "2", id: "2H_p2" });
+        playerHand.push({ suit: "D", value: "2", id: "2D_p2" }); // 4
+        playerHand.push({ suit: "S", value: "5", id: "5S_p2" }); // 4+5=9
         bankerHand.push({ suit: "C", value: "5", id: "5C_p2" });
-        bankerHand.push({ suit: "H", value: "2", id: "2H_p2" }); // 7로 스탠드
+        bankerHand.push({ suit: "H", value: "2", id: "2H_p2" }); // 7 (스탠드)
         break;
       case 3: // 간발의 차이로 승리
         playerHand.push({ suit: "H", value: "6", id: "6H_p3" });
@@ -903,8 +903,8 @@ class BaccaratGame {
         playerHand.push({ suit: "H", value: "7", id: "7H_p5" });
         playerHand.push({ suit: "D", value: "7", id: "7D_p5" }); // 4 (페어)
         playerHand.push({ suit: "S", value: "5", id: "5S_p5" }); // 4+5=9
-        bankerHand.push({ suit: "C", value: "6", id: "6C_p5" });
-        bankerHand.push({ suit: "H", value: "2", id: "2H_p5" }); // 8
+        bankerHand.push({ suit: "C", value: "3", id: "3C_p5" });
+        bankerHand.push({ suit: "H", value: "4", id: "4H_p5" }); // 7 (플레이어 세 번째 카드가 5이므로 뱅커 스탠드)
         break;
       case 6: // 미라클 승부 (0에서 9로)
         playerHand.push({ suit: "H", value: "K", id: "KH_p6" });
@@ -935,9 +935,9 @@ class BaccaratGame {
         playerHand.push({ suit: "H", value: "2", id: "2H_b2" });
         playerHand.push({ suit: "D", value: "A", id: "AD_b2" }); // 3
         playerHand.push({ suit: "S", value: "4", id: "4S_b2" }); // 3+4=7
-        bankerHand.push({ suit: "C", value: "2", id: "2C_b2" });
-        bankerHand.push({ suit: "H", value: "6", id: "6H_b2" }); // 8
-        // 플레이어 세 번째 카드가 4이므로 뱅커는 스탠드
+        bankerHand.push({ suit: "C", value: "3", id: "3C_b2" });
+        bankerHand.push({ suit: "H", value: "5", id: "5H_b2" }); // 8 (플레이어 세 번째 카드가 4이므로 뱅커 드로우)
+        bankerHand.push({ suit: "D", value: "0", id: "0D_b2" }); // 8+0=8
         break;
       case 3: // 압도적 승리
         playerHand.push({ suit: "H", value: "2", id: "2H_b3" });
@@ -953,7 +953,7 @@ class BaccaratGame {
         bankerHand.push({ suit: "H", value: "2", id: "2H_b4" }); // 3
         bankerHand.push({ suit: "D", value: "5", id: "5D_b4" }); // 3+5=8
         break;
-      case 5: // 내추럴 8 승부 (페어 없음)
+      case 5: // 뱅커 8 vs 플레이어 페어 6
         playerHand.push({ suit: "H", value: "3", id: "3H_b5" });
         playerHand.push({ suit: "D", value: "3", id: "3D_b5" }); // 6 (페어)
         bankerHand.push({ suit: "C", value: "8", id: "8C_b5" });
